@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Cubby</title>
+  <meta name="description" content="Cubby: a glowing grid of little 3D rooms. Ask your own Claude to design yours, paste the room code, and save it to the grid.">
+  <meta name="theme-color" content="#070B0A">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/favicon.ico" sizes="48x48">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Geist:wght@400;500;600&family=Caveat:wght@600&display=swap" rel="stylesheet">
+</head>
+<body>
+<div id="app">
+  <canvas id="scene" tabindex="0" aria-label="3D grid of rooms. Drag to look around, click a room or an object to learn about it."></canvas>
+  <header class="brand">
+    <div class="title">
+      <div class="eyebrow"><span class="flag" aria-hidden="true"></span><span id="stats">Cubby</span></div>
+      <h1 id="placeName">Home Room</h1>
+      <p class="hint" id="hint">Drag to look around. Scroll to zoom. Click anything.</p>
+      <p class="notice" id="notice" hidden></p>
+    </div>
+    <div class="tools">
+      <button class="tool" id="viewBtn" type="button">See the grid</button>
+      <button class="tool accent" id="addBtn" type="button">Add your room</button>
+      <button class="tool" id="motionBtn" type="button">Pause</button>
+    </div>
+  </header>
+
+  <aside class="panel" id="panel" hidden aria-live="polite">
+    <div class="panel-top">
+      <div class="kind" id="pKind"><span class="dot"></span><span></span></div>
+    </div>
+    <p class="saved" id="pSaved" hidden><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><span>Your room is on the grid. Everyone who opens Cubby can see it now.</span></p>
+    <h2 id="pTitle"></h2>
+    <p id="pBody"></p>
+    <div class="tags" id="pTags"></div>
+    <div class="stack" id="pStack"></div>
+    <div class="row" id="pLinks"></div>
+    <div class="row actions">
+      <button class="link" id="backBtn" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg><span>Back to the grid</span></button>
+      <button class="next" id="lookBtn" type="button">Look around</button>
+      <button class="next" id="nextBtn" type="button">Next thing <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
+    </div>
+    <div class="mine" id="mineRow" hidden>
+      <span>This is your room.</span>
+      <button class="text-btn" id="editBtn" type="button">Change it</button>
+      <span aria-hidden="true">·</span>
+      <button class="text-btn danger" id="removeBtn" type="button">Delete it</button>
+    </div>
+    <div class="mine" id="reportRow" hidden>
+      <span>Something wrong with this room?</span>
+      <button class="text-btn" id="reportBtn" type="button">Report it</button>
+      <span class="status" id="reportStatus" role="status"></span>
+    </div>
+  </aside>
+
+  <aside class="panel add" id="addPanel" hidden>
+    <div class="panel-top">
+      <div class="kind" style="--c: #3DFFB0"><span class="dot"></span><span id="addTitle">Add your room</span></div>
+      <button class="x" id="addClose" type="button" aria-label="Close"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <section class="step">
+      <h3><span class="num">1</span>Get your room code</h3>
+      <p>Copy this prompt and paste it into your own Claude. The Claude desktop app works best, because it can look through your project folders. It sends back a room code.</p>
+      <div class="row"><button class="link" id="copyPrompt" type="button">Copy the prompt</button><span class="status" id="copyStatus" role="status"></span></div>
+      <details id="promptBox"><summary>See the prompt</summary><textarea id="promptText" rows="8" readonly aria-label="The prompt to copy"></textarea></details>
+    </section>
+    <section class="step">
+      <h3><span class="num">2</span>Paste your code and add it</h3>
+      <label class="sr" for="codeInput">Room code</label>
+      <textarea id="codeInput" rows="5" spellcheck="false" placeholder='{ "v": 1, "title": "...", "objects": [ ... ] }'></textarea>
+      <p class="muted" id="squareLine"></p>
+      <div class="row"><button class="link" id="saveBtn" type="button">Add my room</button><span class="status" id="saveStatus" role="status"></span></div>
+      <p class="status error" id="codeError" role="alert" hidden></p>
+      <p class="muted auth-line" id="authLine"></p>
+    </section>
+  </aside>
+
+  <nav class="dock" id="dock" aria-label="Places and things"></nav>
+  <div class="tip" id="tip" hidden></div>
+  <div class="loading" id="loading">Building the grid</div>
+</div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

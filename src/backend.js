@@ -1,0 +1,131 @@
+import { createClient } from '@supabase/supabase-js';
+import { cleanRecipe } from './recipe.js';
+
+/* Two backends with the same shape:
+   - Supabase (live, shared): used when VITE_SUPABASE_URL and the publishable (anon) key are set.
+     Anyone can look without signing in. Adding, changing or reporting a room needs Google sign-in.
+   - Demo (this browser only): used before you connect Supabase, so the site still runs. */
+
+const URL_ = import.meta.env.VITE_SUPABASE_URL;
+const KEY_ = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || import.meta.env.VITE_SUPABASE_ANON_KEY;
+const MAX_CODE_CHARS = 60000;
+const PAGE = 1000;
+
+// what gets stored: the recipe only, never the square or the owner
+function toStored(recipe) {
+  const r = cleanRecipe(recipe);
+  const stored = { v: 1, title: r.title, bio: r.bio, color: r.color, links: r.links, objects: r.objects };
+  if (r.decor) stored.decor = r.decor;
+  if (JSON.stringify(stored).length > MAX_CODE_CHARS) throw { code: 'too_big', message: 'This room code is too big. Ask your Claude for fewer parts.' };
+  return stored;
+}
+// what the page draws: cleaned again, because everything in the database is other people's input
+function fromRow(row) {
+  try {
+    const r = cleanRecipe({ ...(row.recipe || {}), id: row.owner });
+    return { ...r, owner: row.owner, px: row.px, pz: row.pz, hidden: !!row.hidden, createdAt: row.created_at };
+  } catch { return null; }
+}
+function userOf(u) {
+  if (!u || u.is_anonymous) return null;
+  const m = u.user_metadata || {};
+  return { id: u.id, name: m.full_name || m.name || (u.email || '').split('@')[0] || 'you', email: u.email || '' };
+}
+
+export async function createBackend() {
+  if (URL_ && KEY_) {
+    try { return await supabaseBackend(); } catch (e) { console.warn('Supabase unavailable, using demo mode', e); }
+  }
+  return demoBackend();
+}
+
+async function supabaseBackend() {
+  const sb = createClient(URL_, KEY_, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'pkce' } });
+  // coming back from Google: supabase-js swaps the ?code= for a session while it starts up
+  const params = new URLSearchParams(location.search);
+  let authError = params.get('error_description') || null;
+  const { data: { session } } = await sb.auth.getSession();
+  if (params.has('code') || params.has('error')) history.replaceState(null, '', location.pathname + location.hash);
+
+  const api = { mode: 'live', user: userOf(session?.user), authError };
+  Object.defineProperty(api, 'me', { get: () => api.user?.id || null });
+  const authListeners = [];
+  sb.auth.onAuthStateChange((_ev, s) => {
+    const u = userOf(s?.user);
+    if ((u?.id || null) === (api.user?.id || null)) return;
+    api.user = u; authListeners.forEach(cb => cb(u));
+  });
+  api.onAuth = cb => authListeners.push(cb);
+
+  api.signIn = async () => {
+    const { error } = await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + location.pathname } });
+    if (error) throw { code: 'signin_failed', message: 'Could not start Google sign-in: ' + error.message };
+  };
+  api.signOut = async () => { await sb.auth.signOut(); };
+
+  api.listRooms = async () => {
+    const out = [];
+    for (let from = 0; from < 20000; from += PAGE) {
+      const { data, error } = await sb.from('rooms').select('owner,px,pz,recipe,hidden,created_at').order('created_at', { ascending: true }).range(from, from + PAGE - 1);
+      if (error) throw error;
+      out.push(...data.map(fromRow).filter(Boolean));
+      if (data.length < PAGE) break;
+    }
+    return out;
+  };
+  api.subscribe = (cb) => {
+    let t = null; // many changes in a row only reload once
+    const ch = sb.channel('rooms-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms' }, () => { clearTimeout(t); t = setTimeout(async () => { try { cb(await api.listRooms()); } catch {} }, 400); })
+      .subscribe();
+    return () => sb.removeChannel(ch);
+  };
+  api.saveRoom = async (recipe, px, pz) => {
+    if (!api.me) throw { code: 'signin', message: 'Sign in with Google first.' };
+    const row = { owner: api.me, px, pz, recipe: toStored(recipe) };
+    const { error } = await sb.from('rooms').upsert(row, { onConflict: 'owner' });
+    if (error) {
+      if (error.code === '23505') throw { code: 'taken', message: 'Someone just took that square. Click another glowing square and try again.' };
+      if (error.code === '23514') throw { code: 'invalid', message: 'The database said no to this room code. Ask your Claude for a smaller room.' };
+      if (error.code === 'P0001') throw { code: 'too_far', message: error.message };
+      if (error.code === '42501') throw { code: 'not_allowed', message: 'This room can\'t be changed right now. It may have been hidden after reports.' };
+      throw { code: 'save_failed', message: 'Could not save: ' + error.message };
+    }
+  };
+  api.deleteRoom = async () => {
+    if (!api.me) return;
+    const { error } = await sb.from('rooms').delete().eq('owner', api.me);
+    if (error) throw { code: 'delete_failed', message: 'Could not delete: ' + error.message };
+  };
+  api.report = async (owner, reason) => {
+    if (!api.me) throw { code: 'signin', message: 'Sign in with Google to report a room.' };
+    const { error } = await sb.from('reports').insert({ room_owner: owner, reason: String(reason || '').slice(0, 200) });
+    if (error && error.code !== '23505') throw { code: 'report_failed', message: 'Could not send the report: ' + error.message };
+  };
+  return api;
+}
+
+function demoBackend() {
+  const KEY = 'room-grid-web-demo-v1';
+  const read = () => { try { return JSON.parse(localStorage.getItem(KEY) || '[]'); } catch { return []; } };
+  const write = rows => { try { localStorage.setItem(KEY, JSON.stringify(rows)); } catch {} };
+  let me = 'demo-me';
+  try { me = localStorage.getItem(KEY + ':me') || ('demo-' + Math.random().toString(36).slice(2, 10)); localStorage.setItem(KEY + ':me', me); } catch {}
+  let listeners = [];
+  const listRooms = async () => read().map(fromRow).filter(Boolean);
+  const emit = async () => { const list = await listRooms(); listeners.forEach(cb => cb(list)); };
+  return {
+    mode: 'demo', me, user: { id: me, name: 'Demo', email: '' }, authError: null, listRooms,
+    onAuth() {}, async signIn() {}, async signOut() {},
+    subscribe(cb) { listeners.push(cb); return () => { listeners = listeners.filter(l => l !== cb); }; },
+    async saveRoom(recipe, px, pz) {
+      const rows = read();
+      if (rows.some(r => r.owner !== me && r.px === px && r.pz === pz)) throw { code: 'taken', message: 'That square is taken. Click another glowing square.' };
+      const old = rows.find(r => r.owner === me);
+      const next = rows.filter(r => r.owner !== me).concat([{ owner: me, px, pz, recipe: toStored(recipe), created_at: old?.created_at || new Date().toISOString() }]);
+      write(next); emit();
+    },
+    async deleteRoom() { write(read().filter(r => r.owner !== me)); emit(); },
+    async report() {}
+  };
+}
