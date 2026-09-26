@@ -8,6 +8,10 @@ import { parseRoomCode, buildRecipeRoom, DEEP_PROMPT } from './recipe.js';
 import { createBackend } from './backend.js';
 import { bakeRoom, farLayer, sampleColors } from './farView.js';
 import * as roomCache from './roomCache.js';
+import { inject } from '@vercel/analytics';
+
+// Initialize Vercel Web Analytics
+inject();
 
 /* ---------- Cubby ---------- */
 const S = 13, HOME = '0_0', GRID = '#3DFFB0';
