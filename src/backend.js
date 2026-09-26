@@ -47,13 +47,19 @@ async function supabaseBackend() {
   const { data: { session } } = await sb.auth.getSession();
   if (params.has('code') || params.has('error')) history.replaceState(null, '', location.pathname + location.hash);
 
-  const api = { mode: 'live', user: userOf(session?.user), authError };
+  const api = { mode: 'live', user: userOf(session?.user), authError, homeOwner: false };
   Object.defineProperty(api, 'me', { get: () => api.user?.id || null });
+  // is this Google account the owner of the home room? The owner's email stays in the database, never in the site.
+  const checkHomeOwner = async () => {
+    if (!api.user) { api.homeOwner = false; return; }
+    try { const { data, error } = await sb.rpc('is_home_owner'); api.homeOwner = !error && data === true; } catch { api.homeOwner = false; }
+  };
+  await checkHomeOwner();
   const authListeners = [];
   sb.auth.onAuthStateChange((_ev, s) => {
     const u = userOf(s?.user);
     if ((u?.id || null) === (api.user?.id || null)) return;
-    api.user = u; authListeners.forEach(cb => cb(u));
+    api.user = u; checkHomeOwner().finally(() => authListeners.forEach(cb => cb(u)));
   });
   api.onAuth = cb => authListeners.push(cb);
 
@@ -115,7 +121,7 @@ function demoBackend() {
   const listRooms = async () => read().map(fromRow).filter(Boolean);
   const emit = async () => { const list = await listRooms(); listeners.forEach(cb => cb(list)); };
   return {
-    mode: 'demo', me, user: { id: me, name: 'Demo', email: '' }, authError: null, listRooms,
+    mode: 'demo', me, user: { id: me, name: 'Demo', email: '' }, authError: null, homeOwner: false, listRooms,
     onAuth() {}, async signIn() {}, async signOut() {},
     subscribe(cb) { listeners.push(cb); return () => { listeners = listeners.filter(l => l !== cb); }; },
     async saveRoom(recipe, px, pz) {

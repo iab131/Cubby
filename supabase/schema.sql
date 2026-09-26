@@ -95,6 +95,22 @@ drop trigger if exists reports_autohide on public.reports;
 create trigger reports_autohide after insert on public.reports
   for each row execute function public.reports_autohide();
 
+-- ---------- home room owner: the Google account that owns the centre room ----------
+-- Add your email once in the SQL Editor (it stays private, the site never sees it):
+--   insert into public.home_owner (email) values ('you@gmail.com') on conflict do nothing;
+create table if not exists public.home_owner (email text primary key);
+alter table public.home_owner enable row level security;
+-- no policies on purpose: nobody can read this table from the site
+
+create or replace function public.is_home_owner() returns boolean
+language sql stable security definer set search_path = public as $$
+  select public.is_real_user() and exists (
+    select 1 from public.home_owner where lower(email) = lower(auth.jwt() ->> 'email')
+  )
+$$;
+revoke execute on function public.is_home_owner() from public, anon;
+grant execute on function public.is_home_owner() to authenticated;
+
 -- send live updates to everyone when a room is added, changed or deleted
 do $$ begin
   alter publication supabase_realtime add table public.rooms;

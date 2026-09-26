@@ -3,9 +3,10 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import './style.css';
 import { canvasTex } from './three-helpers.js';
 import { disposeGroup } from './kit.js';
-import { createHomeRoom, HOT, HOT_BY_ID, KIND } from './homeRoom.js';
+import { createHomeRoom, HOT, HOT_BY_ID, KIND, HOME_NAME, HOME_BIO } from './homeRoom.js';
 import { parseRoomCode, buildRecipeRoom, DEEP_PROMPT } from './recipe.js';
 import { createBackend } from './backend.js';
+import { buildFarView, setFar } from './farView.js';
 
 /* ---------- Cubby ---------- */
 const S = 13, HOME = '0_0', GRID = '#3DFFB0';
@@ -50,9 +51,12 @@ function setControlMode(grid) {
 }
 const panLimit = () => (gridR + 0.5) * S;
 const panShift = new THREE.Vector3();
-function clampPan() {   // keep the grid on screen: the point you look at stays on the grid
-  const t = controls.target;
-  const L = panLimit(); panShift.set(THREE.MathUtils.clamp(t.x, -L, L) - t.x, -t.y, THREE.MathUtils.clamp(t.z, -L, L) - t.z);
+const ROOM_REACH = 5.25; // how far from a room's middle the point you look at may go (half a room)
+// keep the point you look at in bounds: on the grid while you slide around it, inside the room while you zoom around it
+function clampPan() {
+  const t = controls.target, clamp = THREE.MathUtils.clamp;
+  if (focusPlot === null) { const L = panLimit(); panShift.set(clamp(t.x, -L, L) - t.x, -t.y, clamp(t.z, -L, L) - t.z); }
+  else { const [px, pz] = parseKey(focusPlot), R = ROOM_REACH; panShift.set(clamp(t.x, px * S - R, px * S + R) - t.x, clamp(t.y, LIFT, LIFT + 5) - t.y, clamp(t.z, pz * S - R, pz * S + R) - t.z); }
   if (panShift.lengthSq() > 1e-8) { t.add(panShift); camera.position.add(panShift); }
 }
 const DIR = new THREE.Vector3(1, 0.78, 1).normalize();
@@ -135,9 +139,9 @@ function makeSquare(k) {
   const p = posOf(k);
   const hb = new THREE.Mesh(hitGeo, hitMat); hb.position.set(p.x, 3.4, p.z); hb.userData.plot = k; scene.add(hb); hitByKey.set(k, hb);
   if (k === HOME) return;
-  const m = new THREE.LineBasicMaterial({ color: GRID, transparent: true, opacity: 0.14, depthWrite: false });
+  const m = new THREE.LineBasicMaterial({ color: GRID, transparent: true, opacity: 0, depthWrite: false });
   const e = new THREE.LineSegments(edgeGeo, m); e.position.set(p.x - 0.05, 3.05, p.z - 0.05); scene.add(e);
-  empties.set(k, { lines: e, phase: Math.random() * 6.28, hot: false });
+  empties.set(k, { lines: e, hot: false });
 }
 // grow (or shrink) the grid: squares, floor glow, rain, fog and camera range all follow
 function setGridR(R) {
@@ -184,7 +188,8 @@ function placeRoom(k, room, kind = 'guest') {
   removePlace(k);
   const root = new THREE.Group(); root.position.copy(posOf(k)); scene.add(root);
   const built = buildRecipeRoom(root, room, fontsOk);
-  return addPlace(k, kind, root, { room, anims: built.anims, objGroups: built.objGroups, decor: built.decor });
+  const farView = buildFarView(built.group);   // the cheap version drawn when the camera is far away
+  return addPlace(k, kind, root, { room, anims: built.anims, objGroups: built.objGroups, decor: built.decor, farView });
 }
 
 /* ---------- state ---------- */
@@ -197,17 +202,23 @@ let motionOn = !reduced;
 
 /* ---------- camera ---------- */
 let tween = null;
-function flyTo(pos, target, ms = 1100, start = performance.now()) { tween = { p0: camera.position.clone(), t0: controls.target.clone(), p1: pos, t1: target, start, ms: reduced ? 1 : ms }; controls.enabled = false; }
+// the zoom-out limit is lifted while the camera flies, and set again (for the grid or the room) when it lands
+function flyTo(pos, target, ms = 1100, start = performance.now()) { tween = { p0: camera.position.clone(), t0: controls.target.clone(), p1: pos, t1: target, start, ms: reduced ? 1 : ms }; controls.enabled = false; controls.maxDistance = Infinity; }
 // change which room is in focus: the room rises, the rest fades to black and the camera flies in, all together
 function setFocus(k) { if (focusPlot === k) return false; focusPlot = k; setControlMode(k === null); startTrans(); updateOcclusion(); return true; }
 const aspect = () => canvas.clientWidth / Math.max(1, canvas.clientHeight);
 function roomDist() { const a = aspect(); return a < 0.7 ? 40 : a < 1 ? 33 : a < 1.4 ? 27 : 24; }
 function overviewDist() { return (aspect() < 0.8 ? 215 : 128) * Math.max(7, 2 * gridR + 1) / 9; }
+// how far you can scroll out: well past the whole-grid view on the grid, a little past the starting view in a room
+const GRID_ZOOM_OUT = 2.0;
+const zoomOutLimit = () => focusPlot === null ? overviewDist() * GRID_ZOOM_OUT : roomDist() * 1.15 * 1.6;
+// the fog starts just past the point you look at and moves with the camera, so zooming out never dims
+// the rooms in view; it only fades the far edge of the grid
+const FOG_NEAR = 1.1, FOG_FAR = 2.6;
+function fitFog() { const cd = camera.position.distanceTo(controls.target); scene.fog.near = Math.max(90, cd * FOG_NEAR); scene.fog.far = Math.max(240, cd * FOG_FAR); }
 function fitRange() { // how far the camera can pull back and see, for the current grid size
-  const d = overviewDist();
-  controls.maxDistance = Math.max(230, d * 1.8);
-  scene.fog.near = Math.max(90, d * 0.7); scene.fog.far = Math.max(240, d * 1.9);
-  camera.far = Math.max(500, scene.fog.far + 60); camera.updateProjectionMatrix();
+  if (!tween) controls.maxDistance = zoomOutLimit();
+  camera.far = Math.max(500, overviewDist() * GRID_ZOOM_OUT * FOG_FAR + 60); camera.updateProjectionMatrix();
 }
 function goRoom(k) {
   const moved = setFocus(k); activeHot = null; activeObj = null;
@@ -217,9 +228,12 @@ function goRoom(k) {
   aimShadow(posOf(k).add(new THREE.Vector3(0, LIFT, 0)));
   renderChrome();
 }
+// your own square when you're signed in and have a room (the centre one for the home room's owner)
+function myRoomKey() { return backend?.homeOwner ? HOME : myRoom ? keyOf(myRoom.px, myRoom.pz) : null; }
+// back to the grid, centred on your room if you have one, otherwise on the middle
 function goOverview() {
   const moved = setFocus(null); activeHot = null; activeObj = null; hidePanel();
-  const t = new THREE.Vector3(0, 0, 0), dir = new THREE.Vector3(1, 1.25, 1).normalize();
+  const k = myRoomKey(), t = k ? posOf(k) : new THREE.Vector3(0, 0, 0), dir = new THREE.Vector3(1, 1.25, 1).normalize();
   flyTo(t.clone().addScaledVector(dir, overviewDist()), t, moved ? TRANS_MS : 1400, moved && trans ? trans.t0 : undefined);
   renderChrome();
 }
@@ -240,14 +254,14 @@ function focusObj(k, i) {
   showObj(pl.room, i); renderChrome();
 }
 
-/* hide rooms that sit between the camera and the one in focus */
+/* rooms that sit between the camera and the one in focus: they can't be clicked. They still fade to black
+   with the rest and are hidden once dark (see the loop), so nothing vanishes mid-zoom. */
 let blocked = new Set();
 function updateOcclusion() {
   blocked = new Set();
   const f = focusPlot ? parseKey(focusPlot) : null;
   const test = k => { if (!f) return false; const [px, pz] = parseKey(k); const dx = px - f[0], dz = pz - f[1]; const b = dx >= 0 && dz >= 0 && dx + dz > 0 && dx <= 2 && dz <= 2; if (b) blocked.add(k); return b; };
   hitboxes.forEach(h => test(h.userData.plot));
-  places.forEach((pl, k) => { pl.root.visible = !blocked.has(k); });
   empties.forEach((e, k) => { e.lines.visible = !places.has(k) && !buildQueue.has(k) && !blocked.has(k) && ring(k) <= gridR; });
 }
 
@@ -260,7 +274,7 @@ function setLinks(list) {
   list.filter(l => l && l.url).forEach(l => { const a = document.createElement('a'); a.className = 'next'; a.href = l.url; a.target = '_blank'; a.rel = 'noopener noreferrer nofollow'; a.textContent = l.label + ' \u2197'; row.appendChild(a); });
   row.hidden = !row.childElementCount;
 }
-function panelBasics(title, body, stack) { $('pTitle').textContent = title; $('pBody').textContent = body; $('pStack').textContent = stack || ''; $('pTags').replaceChildren(); $('pSaved').hidden = true; $('mineRow').hidden = true; $('reportRow').hidden = true; }
+function panelBasics(title, body, stack) { $('pTitle').textContent = title; $('pBody').textContent = body; $('pStack').textContent = stack || ''; $('pTags').replaceChildren(); $('pSaved').hidden = true; $('mineRow').hidden = true; $('reportRow').hidden = true; $('ownerRow').hidden = true; }
 // the buttons at the bottom of the card: a room card leads back to the grid, a thing card leads back to its room
 function setActions(kind) {
   $('backBtn').lastElementChild.textContent = kind === 'room' ? 'Back to the grid' : 'Back to the room';
@@ -269,38 +283,50 @@ function setActions(kind) {
 }
 function showHot(h) {
   const k = KIND[h.kind];
-  setKind(k.color, h.kind === 'build' ? 'Project · ' + h.name : k.label);
+  setKind(k.color, k.label);
   panelBasics(h.title, h.body, h.stack);
   setLinks(h.link ? [{ url: h.link, label: h.linkLabel }] : []);
   setActions('thing'); panel.hidden = false;
 }
 const TYPE_COLOR = { project: '#FF8A4C', interest: '#2CC4B3', about: '#F2C14E' };
 function showRoomCard(room, isPreview, justSaved) {
-  setKind(room.color, isPreview ? 'Preview · not saved yet' : 'Room');
+  setKind(room.color, isPreview ? 'Preview, not saved yet' : 'Room');
   panelBasics(room.title, room.bio || 'No bio yet.', '');
-  const tags = $('pTags');
-  room.objects.forEach((o, i) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'tag'; b.style.setProperty('--c', TYPE_COLOR[o.type]); b.textContent = o.name; b.addEventListener('click', () => focusObj(keyOfRoom(room), i)); tags.appendChild(b); });
+  room.objects.forEach((o, i) => addTag(o.name, TYPE_COLOR[o.type], () => focusObj(keyOfRoom(room), i)));
   setLinks(room.links || []);
   setActions('room');
   const mine = !isPreview && backend && room.owner === backend.me;
   $('mineRow').hidden = !mine; $('pSaved').hidden = !(mine && justSaved);
-  if (mine) setKind(room.color, room.hidden ? 'Your room · hidden after reports' : 'Your room');
+  if (mine) setKind(room.color, room.hidden ? 'Your room, hidden after reports' : 'Your room');
   const canReport = !isPreview && !mine && room.owner && backend?.mode === 'live';
   $('reportRow').hidden = !canReport; $('reportStatus').textContent = '';
   const rb = $('reportBtn'); rb.hidden = false; rb.dataset.owner = room.owner || ''; rb.dataset.confirm = '';
   rb.textContent = backend?.me ? 'Report it' : 'Sign in to report';
   panel.hidden = false;
 }
+function addTag(text, color, onClick) { const b = document.createElement('button'); b.type = 'button'; b.className = 'tag'; b.style.setProperty('--c', color); b.textContent = text; b.addEventListener('click', onClick); $('pTags').appendChild(b); }
+// the hand-built home room's card; its owner (signed in with Google) also sees who they're signed in as
+function showHomeCard() {
+  const mine = !!backend?.homeOwner;
+  setKind('#E8402F', mine ? 'Your room' : 'Room');
+  panelBasics(HOME_NAME, HOME_BIO, '');
+  HOT.forEach(h => addTag(h.name, KIND[h.kind].color, () => focusHot(h.id)));
+  setLinks([]); setActions('room');
+  $('ownerRow').hidden = !mine;
+  if (mine) $('ownerName').textContent = `Signed in as ${backend.user.name}.`;
+  panel.hidden = false;
+}
+$('ownerOut').addEventListener('click', async () => { await backend.signOut(); hidePanel(); });
 function showObj(room, i) {
   const o = room.objects[i];
-  setKind(TYPE_COLOR[o.type], `${room.title} · ${o.type === 'project' ? 'Project' : o.type === 'about' ? 'About' : 'Interest'}`);
+  setKind(TYPE_COLOR[o.type], o.type === 'project' ? 'Project' : o.type === 'about' ? 'About' : 'Interest');
   panelBasics(o.name, o.about || '', o.kit ? '' : `${o.parts ? o.parts.length : 0} parts`);
   setLinks(o.link ? [{ url: o.link, label: 'Open link' }] : []);
   setActions('thing'); panel.hidden = false;
 }
 function keyOfRoom(room) { for (const [k, pl] of places) if (pl.room === room) return k; return null; }
 // leave a thing card: fly back out to the whole room (and show the room's card again)
-function backToRoom() { hidePanel(); const k = focusPlot; activeHot = null; activeObj = null; if (!k) return; goRoom(k); const pl = places.get(k); if (pl?.room) showRoomCard(pl.room); }
+function backToRoom() { hidePanel(); const k = focusPlot; activeHot = null; activeObj = null; if (!k) return; goRoom(k); const pl = places.get(k); if (pl?.room) showRoomCard(pl.room); else if (k === HOME) showHomeCard(); }
 $('backBtn').addEventListener('click', () => { if (activeHot || activeObj) backToRoom(); else { hidePanel(); goOverview(); } });
 $('lookBtn').addEventListener('click', () => hidePanel());
 $('nextBtn').addEventListener('click', () => {
@@ -311,11 +337,11 @@ $('nextBtn').addEventListener('click', () => {
 /* ---------- header + dock ---------- */
 function renderChrome() {
   const pl = focusPlot ? places.get(focusPlot) : null;
-  $('placeName').textContent = focusPlot === null ? 'The Grid' : focusPlot === HOME ? "Home Room" : (pl?.room?.title || 'Empty square');
-  $('hint').textContent = focusPlot === null ? 'Every square is a room. Click one to bring it up. Drag to move around, right-drag to turn.' : 'Drag to look around. Scroll to zoom. Click anything in the room.';
+  $('placeName').textContent = focusPlot === null ? 'The grid' : focusPlot === HOME ? HOME_NAME : (pl?.room?.title || 'Empty square');
+  $('hint').textContent = focusPlot === null ? 'Every square holds someone’s room. Click one to go in. Drag to move around, right-drag to turn.' : 'Drag to turn the room. Scroll to zoom in on what’s under the mouse. Click anything to read about it.';
   $('viewBtn').hidden = focusPlot === null;   // only shown inside a room, to go back to the grid
   const n = rooms.length + 1;
-  $('stats').textContent = `Cubby · ${n} room${n === 1 ? '' : 's'}`;
+  $('stats').textContent = `${n} room${n === 1 ? '' : 's'}`;
   const dock = $('dock'); dock.replaceChildren();
   const label = t => { const l = document.createElement('span'); l.className = 'group-label'; l.textContent = t; dock.appendChild(l); };
   const chip = (text, color, on, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'chip' + (on ? ' on' : ''); b.style.setProperty('--c', color); const d = document.createElement('span'); d.className = 'dot'; b.append(d, document.createTextNode(text)); b.addEventListener('click', fn); dock.appendChild(b); };
@@ -326,15 +352,16 @@ function renderChrome() {
     pl.room.objects.forEach((o, i) => chip(o.name, TYPE_COLOR[o.type], activeObj && activeObj.k === focusPlot && activeObj.i === i, () => focusObj(focusPlot, i)));
   } else {
     label('Rooms');
-    chip("Home room", '#E8402F', false, () => { hidePanel(); goRoom(HOME); });
+    chip(HOME_NAME, '#E8402F', false, () => { goRoom(HOME); showHomeCard(); });
     rooms.forEach(r => chip(r.title, r.color, false, () => { const k = keyOf(r.px, r.pz); const pl = buildNow(k); goRoom(k); if (pl) showRoomCard(pl.room); }));
-    if (!rooms.length) label('No other rooms yet. Add yours.');
+    if (!rooms.length) label('No other rooms yet');
   }
 }
 $('viewBtn').addEventListener('click', () => goOverview());
 const motionBtn = $('motionBtn');
-motionBtn.textContent = motionOn ? 'Pause' : 'Play';
-motionBtn.addEventListener('click', () => { motionOn = !motionOn; motionBtn.textContent = motionOn ? 'Pause' : 'Play'; });
+const motionLabel = () => { motionBtn.textContent = motionOn ? 'Pause motion' : 'Play motion'; };
+motionLabel();
+motionBtn.addEventListener('click', () => { motionOn = !motionOn; motionLabel(); });
 
 /* ---------- saved rooms in the world ---------- */
 const sigOf = r => JSON.stringify([r.title, r.bio, r.color, r.links, r.objects]);
@@ -355,7 +382,7 @@ function applyRooms(list) {
   // new rooms are built a few per frame, nearest first, so a big grid never freezes the page
   wanted.forEach((r, k) => { const pl = places.get(k); if (pl && pl.kind === 'guest') { pl.room = r; return; } if (!pl) buildQueue.set(k, r); });
   updateOcclusion(); renderChrome();
-  $('addBtn').textContent = myRoom ? 'Your room' : 'Add your room';
+  $('addBtn').textContent = myRoom || backend?.homeOwner ? 'Your room' : 'Add your room';
 }
 
 const buildQueue = new Map();   // square -> room waiting to be built
@@ -403,7 +430,12 @@ function renderAddState() {
 function renderAuthLine() {
   const line = $('authLine'); line.replaceChildren();
   if (!backend || backend.mode === 'demo') { line.textContent = 'Demo mode: no sign-in needed.'; return; }
-  if (!backend.user) { line.textContent = 'Adding a room needs a quick Google sign-in (one room per account). Looking around never does.'; return; }
+  if (!backend.user) {
+    const inBtn = document.createElement('button'); inBtn.type = 'button'; inBtn.className = 'text-btn'; inBtn.textContent = 'Sign in';
+    inBtn.addEventListener('click', async () => { try { await backend.signIn(); } catch (e) { $('saveStatus').textContent = e?.message || 'Could not start sign-in.'; } });
+    line.append(document.createTextNode('Adding a room needs a quick Google sign-in (one room per account). Looking around never does. '), inBtn);
+    return;
+  }
   const out = document.createElement('button'); out.type = 'button'; out.className = 'text-btn'; out.textContent = 'Sign out';
   out.addEventListener('click', async () => { await backend.signOut(); });
   line.append(document.createTextNode(`Signed in as ${backend.user.name}. `), out);
@@ -430,7 +462,7 @@ async function copyText(text, statusEl, okMsg) {
     ta.focus(); ta.select();
   }
 }
-$('addBtn').addEventListener('click', () => { if (myRoom && addPanel.hidden) { const k = keyOf(myRoom.px, myRoom.pz); buildNow(k); goRoom(k); showRoomCard(places.get(k)?.room || myRoom); } else openAdd(); });
+$('addBtn').addEventListener('click', () => { if (backend?.homeOwner) { closeAdd(); goRoom(HOME); showHomeCard(); } else if (myRoom && addPanel.hidden) { const k = keyOf(myRoom.px, myRoom.pz); buildNow(k); goRoom(k); showRoomCard(places.get(k)?.room || myRoom); } else openAdd(); });
 $('addClose').addEventListener('click', closeAdd);
 $('copyPrompt').addEventListener('click', () => copyText(DEEP_PROMPT, $('copyStatus'), 'Copied. Paste it into your own Claude.'));
 // one click: check the code, pick the square, save, then fly to the new room
@@ -507,10 +539,10 @@ function describe(h) {
   if (!h) return null;
   if (h.type === 'hot') { const x = HOT_BY_ID[h.id]; return { text: x.name, color: KIND[x.kind].color }; }
   if (h.type === 'obj') { const o = places.get(h.k).room.objects[h.i]; return { text: o.name, color: TYPE_COLOR[o.type] }; }
-  if (h.id === HOME) return { text: "Home room", color: '#E8402F' };
+  if (h.id === HOME) return { text: HOME_NAME, color: '#E8402F' };
   const pl = places.get(h.id), q = buildQueue.get(h.id);
   if (pl || q) { const r = pl ? pl.room : q; return { text: r.title, color: r.color }; }
-  return { text: addPanel.hidden ? 'Empty square · add your room' : 'Put my room here', color: GRID };
+  return { text: addPanel.hidden ? 'Empty square: add your room here' : 'Put my room here', color: GRID };
 }
 function glowGroups(h) {
   if (!h) return [];
@@ -544,6 +576,23 @@ function setPointer(e) { const r = canvas.getBoundingClientRect(); pointer.set((
 canvas.addEventListener('pointermove', e => { setPointer(e); pointerIn = e.pointerType === 'mouse'; pointerDirty = true; });
 canvas.addEventListener('pointerleave', () => { pointerIn = false; setHover(null); });
 canvas.addEventListener('pointerdown', e => { downAt = [e.clientX, e.clientY]; });
+// in a room, scrolling in slides toward whatever is under the mouse and scrolling out drifts back to the room's middle.
+// Each step moves the aim by the same share the zoom takes off the distance, so the spot under the mouse stays put.
+const zoomShift = new THREE.Vector3();
+canvas.addEventListener('wheel', e => {
+  if (focusPlot === null || tween || !e.deltaY) return;
+  const f = 1 - Math.pow(0.95, controls.zoomSpeed * Math.abs(e.deltaY) / (100 * Math.max(1, window.devicePixelRatio | 0)));
+  let aim;
+  if (e.deltaY < 0) {
+    if (controls.getDistance() <= controls.minDistance + 0.01) return;
+    setPointer(e); ray.setFromCamera(pointer, camera);
+    const hit = ray.intersectObjects(places.get(focusPlot)?.root.children || [], true)[0];
+    if (!hit) return;
+    aim = hit.point;
+  } else aim = posOf(focusPlot).setY(LIFT + 1.2);
+  zoomShift.subVectors(aim, controls.target).multiplyScalar(f);
+  controls.target.add(zoomShift); camera.position.add(zoomShift);
+}, { passive: true });
 canvas.addEventListener('pointerup', e => {
   if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 6 || tween) { downAt = null; return; }
   downAt = null; setPointer(e);
@@ -551,11 +600,11 @@ canvas.addEventListener('pointerup', e => {
   if (h.type === 'hot') { focusHot(h.id); return; }
   if (h.type === 'obj') { focusObj(h.k, h.i); return; }
   const k = h.id, pl = buildNow(k);
-  if (k === HOME) { if (focusPlot !== HOME) { hidePanel(); goRoom(HOME); } return; }
+  if (k === HOME) { if (focusPlot !== HOME) { goRoom(HOME); showHomeCard(); } return; }
   if (pl) { if (focusPlot !== k) goRoom(k); showRoomCard(pl.room); return; }
   if (!focusPlot) openAdd(k);
 });
-window.addEventListener('keydown', e => { if (e.key !== 'Escape') return; if (!addPanel.hidden) closeAdd(); else if (!panel.hidden) { if (activeHot || activeObj) backToRoom(); else hidePanel(); } });
+window.addEventListener('keydown', e => { if (e.key !== 'Escape') return; if (!addPanel.hidden) closeAdd(); else if (activeHot || activeObj) backToRoom(); else if (focusPlot !== null) goOverview(); else hidePanel(); });
 
 /* ---------- boot ---------- */
 function resize() { const w = canvas.clientWidth, h = canvas.clientHeight; renderer.setSize(w, h, false); camera.aspect = w / Math.max(1, h); camera.updateProjectionMatrix(); fitRange(); }
@@ -577,7 +626,7 @@ $('loading').classList.add('gone');
 backend = await createBackend();
 if (backend.mode === 'demo') showNotice('Demo mode: rooms you save stay in this browser only until Supabase is connected (see README).');
 else if (backend.authError) showNotice('Google sign-in did not work: ' + backend.authError);
-try { applyRooms(await backend.listRooms()); } catch (e) { console.warn(e); showNotice('Could not load rooms right now. Showing the home room only.'); }
+try { applyRooms(await backend.listRooms()); } catch (e) { console.warn(e); showNotice(`Could not load rooms right now. Showing ${HOME_NAME} only.`); }
 if (focusPlot === null && gridR > MIN_R) goOverview();
 backend.subscribe(list => applyRooms(list));
 backend.onAuth(async () => { try { applyRooms(await backend.listRooms()); } catch {} if (!addPanel.hidden) renderAddState(); });
@@ -618,6 +667,7 @@ applyStep();
 /* ---------- loop ---------- */
 const clock = new THREE.Clock();
 let elapsed = 0, tvAcc = 0, lastLod = 0, frame = 0;
+const FULL_ROOMS = 6;   // how many of the nearest rooms get full detail (a full room is ~170 draw calls, a baked one ~7)
 const ease = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 function loop() {
   const dt = Math.min(clock.getDelta(), 0.05); frame++;
@@ -640,14 +690,14 @@ function loop() {
     const hb = hitByKey.get(k); if (hb) hb.position.y = 3.4 + pl.lift;
     if (Math.abs(pl.dim - dimT) < 0.005) pl.dim = dimT;
     if (Math.abs(pl.dim - pl.dimShown) > 0.01 || (pl.dim === dimT && pl.dimShown !== dimT)) applyDim(pl);
-    pl.root.visible = !blocked.has(k) && pl.dim < 0.995 && !pl.farOut;
+    pl.root.visible = pl.dim < 0.995 && !pl.farOut;   // other rooms go once they've faded all the way to black
   });
   const gT = kSel ? 1 : 0, uD = groundMat.uniforms.uDim;
   if (trans) uD.value = trans.g + (gT - trans.g) * te; else uD.value += (gT - uD.value) * Math.min(1, dt * 3);
   const u = uD.value, keep = 1 - u;
-  scene.background.copy(BG).lerp(BLACK, u); scene.fog.color.copy(scene.background); groundMat.uniforms.uBg.value.copy(scene.background);
+  scene.background.copy(BG).lerp(BLACK, u); scene.fog.color.copy(scene.background); groundMat.uniforms.uBg.value.copy(scene.background); fitFog();
   rain.material.opacity = 0.5 * keep; rain.visible = keep > 0.005;
-  empties.forEach((e, k) => { const lit = e.hot || (k === addTarget && !addPanel.hidden); e.lines.material.opacity = lit ? 0.75 * keep : (0.1 + 0.07 * (0.5 + 0.5 * Math.sin(elapsed * 1.6 + e.phase))) * keep; });
+  empties.forEach((e, k) => { const lit = e.hot || (k === addTarget && !addPanel.hidden); e.lines.material.opacity = lit ? 0.75 * keep : 0; });
   if (trans && te >= 1) trans = null;
   if (motionOn) {
     elapsed += dt;
@@ -657,23 +707,28 @@ function loop() {
     places.forEach(pl => { if (pl.anims && pl.near && pl.root.visible) pl.anims.forEach(f => f(dt, elapsed)); });
   }
   const nowMs = performance.now();
-  // level of detail: far rooms show only their walls; rooms lost in the fog are not drawn at all
+  // level of detail: the few rooms nearest the camera (and the one you're in) are drawn in full; the rest from
+  // their baked copy (same things and colours, a handful of draw calls). Rooms lost in the fog are not drawn at all.
   if (nowMs - lastLod > 300) {
     lastLod = nowMs; const fogOut = scene.fog.far + 20;
+    const guests = [];
     places.forEach((pl, k) => {
-      const d = camera.position.distanceTo(pl.root.position);
-      pl.farOut = k !== focusPlot && d > fogOut;
-      if (pl.kind === 'home') return;
-      const near = d < 80;
-      if (near !== pl.near) { pl.near = near; (pl.objGroups || []).forEach(g => { g.visible = near; }); if (pl.decor) pl.decor.visible = near; }
+      pl.camD = camera.position.distanceTo(pl.root.position);
+      pl.farOut = k !== focusPlot && pl.camD > fogOut;
+      if (pl.kind !== 'home') guests.push([k, pl]);
+    });
+    guests.sort((a, b) => a[1].camD - b[1].camD);
+    guests.forEach(([k, pl], i) => {
+      const near = k === focusPlot || (i < FULL_ROOMS && !pl.farOut);
+      if (near !== pl.near) { pl.near = near; if (pl.farView) setFar(pl.farView, !near); }
     });
   }
   if (tween) {
     const k = Math.min(1, (performance.now() - tween.start) / tween.ms), e = ease(k);
     camera.position.lerpVectors(tween.p0, tween.p1, e); controls.target.lerpVectors(tween.t0, tween.t1, e);
-    if (k >= 1) { tween = null; controls.enabled = true; }
+    if (k >= 1) { tween = null; controls.enabled = true; controls.maxDistance = zoomOutLimit(); }
   }
-  if (focusPlot === null && !tween) clampPan();
+  if (!tween) clampPan();
   pumpBuilds(tween || trans ? 4 : 10);
   controls.update();
   // shadows: every frame while things fly around, every 2nd frame inside a room, every 8th on the grid

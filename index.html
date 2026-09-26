@@ -11,22 +11,22 @@
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Geist:wght@400;500;600&family=Caveat:wght@600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Barlow:wght@400;500;600&family=Caveat:wght@600&display=swap" rel="stylesheet">
 </head>
 <body>
 <div id="app">
   <canvas id="scene" tabindex="0" aria-label="3D grid of rooms. Drag to look around, click a room or an object to learn about it."></canvas>
   <header class="brand">
     <div class="title">
-      <div class="eyebrow"><span class="flag" aria-hidden="true"></span><span id="stats">Cubby</span></div>
-      <h1 id="placeName">Home Room</h1>
-      <p class="hint" id="hint">Drag to look around. Scroll to zoom. Click anything.</p>
+      <div class="mark"><span class="flag" aria-hidden="true"></span><span class="wordmark">Cubby</span><span id="stats"></span></div>
+      <h1 id="placeName">The grid</h1>
+      <p class="hint" id="hint">Click a room to go in.</p>
       <p class="notice" id="notice" hidden></p>
     </div>
     <div class="tools">
-      <button class="tool" id="viewBtn" type="button">See the grid</button>
+      <button class="tool" id="viewBtn" type="button">Back to the grid</button>
       <button class="tool accent" id="addBtn" type="button">Add your room</button>
-      <button class="tool" id="motionBtn" type="button">Pause</button>
+      <button class="tool" id="motionBtn" type="button">Pause motion</button>
     </div>
   </header>
 
@@ -48,13 +48,16 @@
     <div class="mine" id="mineRow" hidden>
       <span>This is your room.</span>
       <button class="text-btn" id="editBtn" type="button">Change it</button>
-      <span aria-hidden="true">·</span>
       <button class="text-btn danger" id="removeBtn" type="button">Delete it</button>
     </div>
     <div class="mine" id="reportRow" hidden>
       <span>Something wrong with this room?</span>
       <button class="text-btn" id="reportBtn" type="button">Report it</button>
       <span class="status" id="reportStatus" role="status"></span>
+    </div>
+    <div class="mine" id="ownerRow" hidden>
+      <span id="ownerName"></span>
+      <button class="text-btn" id="ownerOut" type="button">Sign out</button>
     </div>
   </aside>
 
@@ -82,7 +85,7 @@
 
   <nav class="dock" id="dock" aria-label="Places and things"></nav>
   <div class="tip" id="tip" hidden></div>
-  <div class="loading" id="loading">Building the grid</div>
+  <div class="loading" id="loading">Building the grid…</div>
 </div>
 <script type="module" src="/src/main.js"></script>
 </body>

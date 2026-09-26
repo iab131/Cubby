@@ -1,6 +1,6 @@
 # Cubby
 
-Cubby is a glowing grid of little 3D rooms, with the home room in the middle. Anyone can add their own room:
+Cubby is a glowing grid of little 3D rooms, with Enhe’s room (the home room) in the middle. Anyone can add their own room:
 
 1. Click **Add your room**, then **Copy the prompt**.
 2. Paste the prompt into your own Claude. It looks through your projects (or asks you a few questions) and gives back a **room code**.
@@ -47,6 +47,21 @@ Open the address it prints (usually http://localhost:5173). Until you connect Su
    - **Site URL:** your Vercel address, like `https://cubby.vercel.app`.
    - **Redirect URLs:** add `https://cubby.vercel.app/**` and `http://localhost:5173/**`.
 
+### Link the home room to your Google account
+
+The home room is built in code, so it isn't a row in the `rooms` table. To have the site know it's yours when you sign in:
+
+1. Run the latest `supabase/schema.sql` (it adds a private `home_owner` table).
+2. In **SQL Editor**, run this with the Gmail address you sign in with:
+
+   ```sql
+   insert into public.home_owner (email) values ('you@gmail.com') on conflict do nothing;
+   ```
+
+3. On the site, open **Add your room**, click **Sign in**, and pick that Google account. The button now says **Your room** and takes you to the home room.
+
+Your email only lives in that table. Nobody can read it from the site.
+
 ### 3. Vercel: puts the site on the internet
 
 1. Put this folder in a new GitHub repo.
@@ -81,7 +96,8 @@ GitHub stops scheduled jobs in repos with no commits for 60 days. If that happen
 ## Staying smooth
 
 - **Sharpness adjusts itself.** If frames get slow (under about 40 per second), the site draws fewer pixels, then turns off shadows. It remembers the level that works for each browser.
-- **Far rooms are simpler.** Rooms far from the camera show only their walls, and rooms lost in the fog are not drawn at all.
+- **Only the nearest rooms are drawn in full.** The 6 rooms closest to the camera (and the one you're in) get full detail. Every other room is drawn from a baked copy: its solid parts merged into one mesh with their colours kept, plus its lamp glows, about 7 draw calls instead of ~170. So you can look over the whole grid and still see what's in every room. Pictures and window views show as their average colour until you get close. Rooms lost in the fog are not drawn at all.
+- **Zooming out has a limit:** well past the whole-grid view on the grid (2 times), and a little past the starting view inside a room.
 - **Rooms load a few at a time,** nearest first, so a big grid never freezes the page.
 - **Shadows are redrawn only when needed:** every frame while the camera flies, every 2nd frame inside a room, every 8th frame on the grid.
 - **Lamp light is faked** with glows instead of real lights, so lamps in every room do not slow the grid down.
