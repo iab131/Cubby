@@ -96,9 +96,12 @@ GitHub stops scheduled jobs in repos with no commits for 60 days. If that happen
 ## Staying smooth
 
 - **Sharpness adjusts itself.** If frames get slow (under about 40 per second), the site draws fewer pixels, then turns off shadows. It remembers the level that works for each browser.
-- **Only the nearest rooms are drawn in full.** The 6 rooms closest to the camera (and the one you're in) get full detail. Every other room is drawn from a baked copy: its solid parts merged into one mesh with their colours kept, plus its lamp glows, about 7 draw calls instead of ~170. So you can look over the whole grid and still see what's in every room. Pictures and window views show as their average colour until you get close. Rooms lost in the fog are not drawn at all.
+- **Every room has a far version.** It's a baked copy: the room's solid parts merged into one mesh with their colours kept, round shapes simplified, plus its lamp glows and name sign. That's about 7 draw calls instead of ~170, so you can look over the whole grid and still see what's in every room. Pictures and window views show as their average colour until you get close.
+- **Only the nearest rooms get full detail,** the 6 closest to the camera and the one you're in. Their detail is built in the background in small steps (build, compile shaders, upload pictures) and swapped in only once it's ready. Heavy steps wait until the camera is still. Detail for rooms far down the list is freed again.
+- **The heavy work happens behind the loading screen.** Every room's far version is made (with a progress bar) and every shader compiled before the grid appears, so the fly-in is smooth. If the database is slow, the grid shows after 8 seconds and the rooms fade in as they arrive.
+- **Return visits are near-instant.** Far versions are cached in the visitor's browser (IndexedDB): about 0.4 ms a room instead of about 16 ms. The cache is keyed by the room code and a fingerprint of the room-building code (`vite.config.js`), so changing either one re-bakes. The cache is off in `npm run dev`.
 - **Zooming out has a limit:** well past the whole-grid view on the grid (2 times), and a little past the starting view inside a room.
-- **Rooms load a few at a time,** nearest first, so a big grid never freezes the page.
+- **Rooms lost in the fog are not drawn at all.**
 - **Shadows are redrawn only when needed:** every frame while the camera flies, every 2nd frame inside a room, every 8th frame on the grid.
 - **Lamp light is faked** with glows instead of real lights, so lamps in every room do not slow the grid down.
 
@@ -112,6 +115,8 @@ GitHub stops scheduled jobs in repos with no commits for 60 days. If that happen
 | `src/decor.js` | The window, pictures on the walls and lamps a room code can ask for (the lamp light is faked with glows, so many rooms stay fast) |
 | `src/kit.js` | Ready-made models a room code can use (F1 car, guitar, cat, and more) and the room shell |
 | `src/kitList.js` | Kit names and colors |
+| `src/farView.js` | A room's far version: bakes a built room into small cacheable data, and turns that data back into meshes |
+| `src/roomCache.js` | Keeps far versions in the visitor's browser (IndexedDB) so return visits skip building |
 | `src/backend.js` | Talks to Supabase (live) or browser storage (demo) |
 | `supabase/schema.sql` | The database table and its safety rules |
 | `public/favicon.svg` | The tab icon (plus `favicon.ico` and `apple-touch-icon.png` for older browsers and phones) |

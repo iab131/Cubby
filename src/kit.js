@@ -373,12 +373,14 @@ export function initialPoster(title, bio, color, fontFamily) {
   }).t;
 }
 
+// free a room's graphics memory. Shapes and textures that other rooms share are kept, so nothing else
+// has to be sent to the graphics card again.
 export function disposeGroup(g) {
   g.traverse(o => {
-    if (!o.isMesh) return;
-    o.geometry?.dispose();
+    if (!o.isMesh && !o.isSprite) return;
+    if (o.isMesh && !o.geometry?.userData.shared) o.geometry?.dispose();
     const ms = Array.isArray(o.material) ? o.material : [o.material];
-    ms.forEach(m => { if (!m) return; if (m.map && !Object.values(cache).includes(m.map)) m.map.dispose(); m.dispose(); });
+    ms.forEach(m => { if (!m) return; if (m.map && !m.map.userData.shared && !Object.values(cache).includes(m.map)) m.map.dispose(); m.dispose(); });
   });
   g.parent?.remove(g);
 }

@@ -1,12 +1,34 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { lightTextures } from './decor.js';
+import { neonSign } from './kit.js';
 
-/* A far-away room in a handful of draw calls instead of hundreds. Every solid piece is baked into one mesh
-   with its colour painted on the corners: lit pieces in one mesh, glowing/unlit ones in another. Pictures
-   and signs use their texture's average colour. Lamp glows are kept as they are. */
+/* The far version of a room: a handful of draw calls instead of hundreds.
+   bakeRoom() turns a fully built room into plain data: every solid piece merged into one mesh with its colour
+   painted on the corners (lit pieces in one, glowing/unlit ones in another), with round shapes simplified,
+   plus a list of the lamp glows and the name sign. The data is small typed arrays, so it can be cached in
+   the browser (roomCache.js) and turned back into a far layer with farLayer() without building the room. */
 
-// average colour of each picture: 64 pixels from each (no smoothing: much faster, close enough),
-// all of a room's pictures drawn into one strip so the page reads pixels back only once per room
+/* ---------- round shapes with fewer sides: nobody can tell from far away ---------- */
+const LOW = new WeakMap();
+function lowPoly(g) {
+  if (LOW.has(g)) return LOW.get(g);
+  const p = g.parameters, m = Math.min;
+  let lo = g;
+  if (p) switch (g.type) {
+    case 'SphereGeometry': lo = new THREE.SphereGeometry(p.radius, m(p.widthSegments, 10), m(p.heightSegments, 7), p.phiStart, p.phiLength, p.thetaStart, p.thetaLength); break;
+    case 'CylinderGeometry': lo = new THREE.CylinderGeometry(p.radiusTop, p.radiusBottom, p.height, m(p.radialSegments, 10), 1, p.openEnded, p.thetaStart, p.thetaLength); break;
+    case 'ConeGeometry': lo = new THREE.ConeGeometry(p.radius, p.height, m(p.radialSegments, 10), 1, p.openEnded, p.thetaStart, p.thetaLength); break;
+    case 'TorusGeometry': lo = new THREE.TorusGeometry(p.radius, p.tube, m(p.radialSegments, 5), m(p.tubularSegments, 14), p.arc); break;
+    case 'CircleGeometry': lo = new THREE.CircleGeometry(p.radius, m(p.segments, 12), p.thetaStart, p.thetaLength); break;
+    case 'TubeGeometry': lo = new THREE.TubeGeometry(p.path, m(p.tubularSegments, 16), p.radius, m(p.radialSegments, 4), p.closed); break;
+    case 'LatheGeometry': lo = new THREE.LatheGeometry(p.points, m(p.segments, 10), p.phiStart, p.phiLength); break;
+  }
+  LOW.set(g, lo); return lo;
+}
+
+/* ---------- average colour of each picture ---------- */
+// 64 pixels from each (no smoothing: much faster, close enough), all of a room's pictures drawn into one strip
+// so the page reads pixels back only once per room
 const probe = document.createElement('canvas'), pctx = probe.getContext('2d', { willReadFrequently: true });
 const avgCache = new WeakMap();
 function averageColors(texes) {
@@ -22,70 +44,109 @@ function averageColors(texes) {
     avgCache.set(t, a ? new THREE.Color().setRGB(r / a / 255, g / a / 255, b / a / 255, THREE.SRGBColorSpace) : null);
   });
 }
-const avgColor = tex => avgCache.get(tex) || null;
 const seeThrough = m => !m || m.visible === false || m.transparent || m.opacity < 1 || m.alphaTest > 0 || m.blending !== THREE.NormalBlending;
 function colorOf(m) {
   const c = m.color ? m.color.clone() : new THREE.Color(1, 1, 1);
-  if (m.map) { const a = avgColor(m.map); if (a) c.multiply(a); }
+  if (m.map) { const a = avgCache.get(m.map); if (a) c.multiply(a); }
   const glowing = m.emissive && m.emissiveIntensity > 0.3 && m.emissive.getHex() !== 0;
   if (glowing) c.copy(m.emissive);
   return { c, flat: !!m.isMeshBasicMaterial || glowing };
 }
 
-// bake the solid meshes under `group`; returns the far mesh (hidden) and the children it stands in for
-export function buildFarView(group) {
+// read the average colours of a built room's pictures ahead of baking (the slow part of a bake, about 5 ms),
+// so building a new room can be split into small steps
+export function sampleColors(group) {
+  const maps = [];
+  group.traverse(o => { if (o.isMesh && o.visible) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => { if (m?.map?.image && !seeThrough(m)) maps.push(m.map); }); });
+  averageColors(maps);
+}
+
+/* ---------- bake: a built room -> plain data ---------- */
+const _v = new THREE.Vector3(), _n = new THREE.Vector3(), _nm = new THREE.Matrix3(), _rel = new THREE.Matrix4();
+// merge [geometry, matrix, per-vertex colour array] items into one set of typed arrays
+function pack(items) {
+  if (!items.length) return null;
+  let nv = 0, ni = 0;
+  for (const it of items) { nv += it.geo.attributes.position.count; ni += it.geo.index ? it.geo.index.count : it.geo.attributes.position.count; }
+  const p = new Float32Array(nv * 3), n = new Int8Array(nv * 3), c = new Uint8Array(nv * 3), idx = nv > 65535 ? new Uint32Array(ni) : new Uint16Array(ni);
+  let vb = 0, ib = 0;
+  for (const { geo, m, col } of items) {
+    const pos = geo.attributes.position, nor = geo.attributes.normal, cnt = pos.count;
+    _nm.getNormalMatrix(m);
+    for (let i = 0; i < cnt; i++) {
+      _v.fromBufferAttribute(pos, i).applyMatrix4(m); _v.toArray(p, (vb + i) * 3);
+      if (nor) _n.fromBufferAttribute(nor, i).applyMatrix3(_nm).normalize(); else _n.set(0, 1, 0);
+      n[(vb + i) * 3] = Math.round(_n.x * 127); n[(vb + i) * 3 + 1] = Math.round(_n.y * 127); n[(vb + i) * 3 + 2] = Math.round(_n.z * 127);
+    }
+    c.set(col, vb * 3);
+    if (geo.index) { const src = geo.index.array; for (let i = 0; i < src.length; i++) idx[ib + i] = src[i] + vb; ib += src.length; }
+    else { for (let i = 0; i < cnt; i++) idx[ib + i] = vb + i; ib += cnt; }
+    vb += cnt;
+  }
+  return { p, n, c, i: idx };
+}
+// lamp glows and the name sign can't be merged (they're see-through), so they're kept as a small list
+function glowRecord(o, rel, tex) {
+  const m = o.material, name = Object.keys(tex).find(k => tex[k] === m.map);
+  if (!name || m.blending !== THREE.AdditiveBlending) return null;
+  const r = { tex: name, c: m.color.getHex(), o: m.opacity, m: Array.from(rel.elements) };
+  if (o.isSprite) return { ...r, k: 's' };
+  const gp = o.geometry.parameters;
+  return o.geometry.type === 'PlaneGeometry' ? { ...r, k: 'p', w: gp.width, h: gp.height } : null;
+}
+export function bakeRoom(group) {
   group.updateMatrixWorld(true);
-  const toLocal = group.matrixWorld.clone().invert(), rel = new THREE.Matrix4();
-  const meshes = [];
+  const toLocal = group.matrixWorld.clone().invert(), tex = lightTextures();
+  const solid = [], glows = []; let sign = null;
   group.traverse(o => {
-    if (!o.isMesh || !o.visible || !o.geometry?.attributes.position) return;
+    if (!(o.isMesh || o.isSprite) || !o.visible) return;
+    const rel = new THREE.Matrix4().multiplyMatrices(toLocal, o.matrixWorld);
+    if (o.userData.sign) { const gp = o.geometry.parameters; sign = { w: gp.width, h: gp.height, m: Array.from(rel.elements) }; return; }
     const mats = Array.isArray(o.material) ? o.material : [o.material];
-    if (!mats.some(seeThrough)) meshes.push([o, mats]);
+    if (o.isSprite || mats.some(seeThrough)) { const g = glowRecord(o, rel, tex); if (g) glows.push(g); return; }   // glass, nets: left out
+    if (o.geometry?.attributes.position) solid.push({ o, mats, rel });
   });
-  averageColors(meshes.flatMap(([, mats]) => mats.map(m => m.map).filter(t => t?.image)));
-  const lit = [], flat = [], baked = new Set();
-  meshes.forEach(([o, mats]) => {
-    const src = o.geometry;
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', src.attributes.position.clone());
-    if (src.attributes.normal) geo.setAttribute('normal', src.attributes.normal.clone()); else geo.computeVertexNormals();
-    const n = geo.attributes.position.count;
-    geo.setIndex(src.index ? src.index.clone() : [...Array(n).keys()]);
-    // colour every corner by the material of the face it belongs to
-    const col = new Float32Array(n * 3), idx = geo.index.array;
-    const ranges = Array.isArray(o.material) && src.groups.length ? src.groups : [{ start: 0, count: idx.length, materialIndex: 0 }];
+  averageColors(solid.flatMap(s => s.mats.map(m => m.map).filter(t => t?.image)));
+  const lit = [], flat = [];
+  for (const { o, mats, rel } of solid) {
+    const src = o.geometry, geo = Array.isArray(o.material) ? src : lowPoly(src);   // multi-material shapes keep their sides
+    const cnt = geo.attributes.position.count, col = new Uint8Array(cnt * 3), idx = geo.index?.array;
+    const ranges = Array.isArray(o.material) && geo.groups.length ? geo.groups : [{ start: 0, count: idx ? idx.length : cnt, materialIndex: 0 }];
     let isFlat = false;
     for (const r of ranges) {
       const { c, flat: f } = colorOf(mats[r.materialIndex] || mats[0]); isFlat ||= f;
-      for (let i = r.start; i < Math.min(idx.length, r.start + r.count); i++) c.toArray(col, idx[i] * 3);
+      const R = Math.round(Math.min(1, c.r) * 255), G = Math.round(Math.min(1, c.g) * 255), B = Math.round(Math.min(1, c.b) * 255);
+      for (let i = r.start; i < Math.min(idx ? idx.length : cnt, r.start + r.count); i++) { const v = (idx ? idx[i] : i) * 3; col[v] = R; col[v + 1] = G; col[v + 2] = B; }
     }
-    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-    geo.applyMatrix4(rel.multiplyMatrices(toLocal, o.matrixWorld));
-    (isFlat ? flat : lit).push(geo); baked.add(o);
-  });
-  const far = new THREE.Group(); far.visible = false; far.name = 'far-view';
-  const litGeo = lit.length ? mergeGeometries(lit) : null, flatGeo = flat.length ? mergeGeometries(flat) : null;
-  if (litGeo) far.add(new THREE.Mesh(litGeo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, side: THREE.DoubleSide })));
-  if (flatGeo) far.add(new THREE.Mesh(flatGeo, new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, side: THREE.DoubleSide })));
-  // the baked copy sits exactly on top of the real room, and three's raycaster doesn't skip hidden things:
-  // left clickable, it would steal hover and clicks from the real objects
-  far.children.forEach(m => { m.raycast = () => {}; });
-  [...lit, ...flat].forEach(g => g.dispose());
-  group.add(far);
-  if (!far.children.length) return { far, hide: [] };   // nothing could be baked: keep drawing the room as it is
-  // what to hide when far: everything the bake stands in for, and small see-through bits (glass, nets).
-  // Lamp glows stay (a few cheap additive planes that keep the room warm), and so does the neon name sign.
-  const hide = [];
-  group.traverse(o => {
-    if (!(o.isMesh || o.isSprite) || !o.visible || o.parent === far) return;
-    const m = Array.isArray(o.material) ? o.material[0] : o.material;
-    const keep = !baked.has(o) && (m?.blending === THREE.AdditiveBlending || o.parent === group);
-    if (!keep) hide.push(o);
-  });
-  return { far, hide };
+    (isFlat ? flat : lit).push({ geo, m: rel, col });
+  }
+  return { lit: pack(lit), flat: pack(flat), glows, sign };
 }
 
-export function setFar(view, on) {
-  view.far.visible = on;
-  view.hide.forEach(c => { c.visible = !on; });
+/* ---------- far layer: data -> meshes ---------- */
+const noRay = () => {};   // the far layer is never clicked: hover and clicks go to the real room
+function bakedMesh(d, material) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(d.p, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(d.n, 3, true));
+  g.setAttribute('color', new THREE.BufferAttribute(d.c, 3, true));
+  g.setIndex(new THREE.BufferAttribute(d.i, 1));
+  g.computeBoundingSphere();
+  const mesh = new THREE.Mesh(g, material); mesh.raycast = noRay; mesh.matrixAutoUpdate = false; return mesh;
+}
+export function farLayer(data, room, fontsReady) {
+  const far = new THREE.Group(); far.name = 'far';
+  if (data.lit) far.add(bakedMesh(data.lit, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, side: THREE.DoubleSide })));
+  if (data.flat) far.add(bakedMesh(data.flat, new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, side: THREE.DoubleSide })));
+  const tex = lightTextures();
+  for (const r of data.glows) {
+    const opts = { map: tex[r.tex], color: r.c, transparent: true, opacity: r.o, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false };
+    const o = r.k === 's' ? new THREE.Sprite(new THREE.SpriteMaterial(opts)) : new THREE.Mesh(new THREE.PlaneGeometry(r.w, r.h), new THREE.MeshBasicMaterial(opts));
+    o.matrix.fromArray(r.m); o.matrixAutoUpdate = false; o.raycast = noRay; far.add(o);
+  }
+  if (data.sign) {
+    const s = new THREE.Mesh(new THREE.PlaneGeometry(data.sign.w, data.sign.h), neonSign(room.title, room.color, fontsReady ? '"Chakra Petch"' : 'system-ui'));
+    s.matrix.fromArray(data.sign.m); s.matrixAutoUpdate = false; s.raycast = noRay; far.add(s);
+  }
+  return far;
 }

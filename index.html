@@ -21,6 +21,7 @@
       <div class="mark"><span class="flag" aria-hidden="true"></span><span class="wordmark">Cubby</span><span id="stats"></span></div>
       <h1 id="placeName">The grid</h1>
       <p class="hint" id="hint">Click a room to go in.</p>
+      <p class="bg-load" id="bgLoad" role="status" hidden></p>
       <p class="notice" id="notice" hidden></p>
     </div>
     <div class="tools">
@@ -85,7 +86,13 @@
 
   <nav class="dock" id="dock" aria-label="Places and things"></nav>
   <div class="tip" id="tip" hidden></div>
-  <div class="loading" id="loading">Building the grid…</div>
+  <div class="loading" id="loading" role="status" aria-live="polite">
+    <div class="load-box">
+      <span class="flag" aria-hidden="true"></span>
+      <p id="loadText">Building the grid…</p>
+      <div class="load-bar" aria-hidden="true"><span id="loadBar"></span></div>
+    </div>
+  </div>
 </div>
 <script type="module" src="/src/main.js"></script>
 </body>

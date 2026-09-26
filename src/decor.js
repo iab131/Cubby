@@ -61,7 +61,10 @@ function lightTex() {
     const g = x.createLinearGradient(0, 0, 0, h); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(1, 'rgba(255,255,255,0)');
     x.fillStyle = g; x.filter = 'blur(6px)'; x.fillRect(14, 0, w - 28, h - 10);
   }).t;
+  for (const t of [GLOW, WASH, PATCH]) t.userData.shared = true;   // every room uses these: never disposed with a room
 }
+// the soft-light textures by name, so a room's far version (farView.js) can rebuild its lamp glows
+export function lightTextures() { lightTex(); return { glow: GLOW, wash: WASH, patch: PATCH }; }
 const addMat = (map, color, opacity) => new THREE.MeshBasicMaterial({ map, color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
 function halo(parent, color, size, x, y, z, opacity = 0.8) {
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: GLOW, color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }));
@@ -224,11 +227,11 @@ function buildPicture(g, p, seed, roomColor, font) {
 }
 
 /* keep pictures off the window and the name poster: slide them along the wall if they overlap */
-function placePictures(pics, blockers) {
+function placePictures(pics, blockers, maxTop = {}) {
   const placed = [];
   for (const p of pics) {
     const q = { ...p };
-    q.y = Math.min(q.y, 4.95 - q.size[1] / 2 - 0.07);
+    q.y = Math.min(q.y, (maxTop[q.wall] ?? 4.95) - q.size[1] / 2 - 0.07);
     q.y = Math.max(q.y, 0.6 + q.size[1] / 2 + (q.title ? 0.35 : 0));
     const hit = (b, at) => b.wall === q.wall && Math.abs(at - b.at) < (b.w + q.size[0]) / 2 + 0.25 && Math.abs(q.y - b.y) < (b.h + q.size[1]) / 2 + 0.2;
     const all = () => [...blockers, ...placed];
@@ -269,11 +272,13 @@ function buildLamp(g, l, anims, seed) {
     let t = seed % 10; anims.push(dt => { t += dt; dome.rotation.z = Math.sin(t * 0.7) * 0.015; });
   } else if (l.kind === 'string') {
     const wg = wallFrame(g, l.wall, 0), n = 18, R = rand(seed), cols = ['#FFD37A', '#FF8A8A', '#8FE3FF', '#A6FF9E', '#FFB0F0'];
-    const wire = new THREE.CatmullRomCurve3(Array.from({ length: 9 }, (_, i) => new THREE.Vector3(-4.6 + i * 1.15, 5.0 - Math.abs(Math.sin(i * Math.PI / 2)) * 0.35, 0.08)));
+    // back wall: under the name sign. left wall: up high, clear of the window and pictures
+    const top = l.wall === 'left' ? 6.2 : 5.0;
+    const wire = new THREE.CatmullRomCurve3(Array.from({ length: 9 }, (_, i) => new THREE.Vector3(-4.6 + i * 1.15, top - Math.abs(Math.sin(i * Math.PI / 2)) * 0.35, 0.08)));
     const tube = new THREE.Mesh(new THREE.TubeGeometry(wire, 64, 0.012, 5), mat('#1B1A1F', 0.6)); wg.add(tube);
     const bulbs = [];
     for (let i = 0; i < n; i++) { const p = wire.getPoint((i + 0.5) / n); const bc = l.color === '#FFD39A' ? cols[Math.floor(R() * cols.length)] : c; const b = sph(0.06, bulbMat(bc), p.x, p.y - 0.06, p.z + 0.02, wg, 8); bulbs.push(b); halo(wg, bc, 0.55, p.x, p.y - 0.06, p.z + 0.06, 0.6); }
-    const wash = plane(9.6, 2.6, addMat(WASH, c, 0.18), 0, 3.8, 0.03, wg);
+    const wash = plane(9.6, 2.6, addMat(WASH, c, 0.18), 0, top - 1.2, 0.03, wg);
     let t = 0; anims.push(dt => { t += dt; bulbs.forEach((b, i) => b.scale.setScalar(0.85 + 0.2 * Math.sin(t * 2 + i * 1.7))); });
   } else if (l.kind === 'strip') {
     const wg = wallFrame(g, l.wall, 0);
@@ -298,6 +303,8 @@ export function buildDecor(g, decor, { seed, color, font, anims, posterSpot }) {
   if (decor.window) { buildWindow(g, decor.window, seed, color); blockers.push({ wall: decor.window.wall, at: decor.window.at, y: 3.3, w: 3.9, h: 2.9 }); }
   if (posterSpot) blockers.push(posterSpot);
   blockers.push({ wall: 'back', at: 0, y: 5.6, w: 5.4, h: 1.2 });
-  placePictures((decor.pictures || []).map(p => ({ ...p })), blockers).forEach((p, i) => buildPicture(g, p, seed + 31 * (i + 1), color, font));
+  // fairy lights under the back-wall sign: keep pictures on that wall below them
+  const maxTop = {}; if ((decor.lights?.lamps || []).some(l => l.kind === 'string' && l.wall === 'back')) maxTop.back = 4.45;
+  placePictures((decor.pictures || []).map(p => ({ ...p })), blockers, maxTop).forEach((p, i) => buildPicture(g, p, seed + 31 * (i + 1), color, font));
   (decor.lights?.lamps || []).forEach((l, i) => buildLamp(g, l, anims, seed + 17 * (i + 1)));
 }

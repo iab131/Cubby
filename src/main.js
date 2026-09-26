@@ -6,7 +6,8 @@ import { disposeGroup } from './kit.js';
 import { createHomeRoom, HOT, HOT_BY_ID, KIND, HOME_NAME, HOME_BIO } from './homeRoom.js';
 import { parseRoomCode, buildRecipeRoom, DEEP_PROMPT } from './recipe.js';
 import { createBackend } from './backend.js';
-import { buildFarView, setFar } from './farView.js';
+import { bakeRoom, farLayer, sampleColors } from './farView.js';
+import * as roomCache from './roomCache.js';
 
 /* ---------- Cubby ---------- */
 const S = 13, HOME = '0_0', GRID = '#3DFFB0';
@@ -155,8 +156,11 @@ function setGridR(R) {
   fitRange();
 }
 
-/* ---------- places (rooms that exist in the world) ---------- */
-const places = new Map(); // key -> { kind, root, room, anims, objGroups, lift, dim, dimShown, mats, lights }
+/* ---------- places (rooms that exist in the world) ----------
+   A guest room has two layers under its root: "far", the baked version (farView.js: a handful of draw calls,
+   cached in the browser), and "detail", the full room, which only the rooms nearest the camera get. Detail is
+   built in the background, warmed up on the graphics card, and swapped in only once it's ready (see "jobs"). */
+const places = new Map(); // key -> { kind, k, root, room, sig, far, detail, lift, dim, dimShown, mats, lights, rank, ... }
 function collectMats(root) {
   const set = new Set();
   root.traverse(o => { if (o.isMesh || o.isSprite) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m && set.add(m)); });
@@ -173,24 +177,19 @@ function applyDim(pl) {
 }
 function addPlace(k, kind, root, extra) {
   const { mats, lights } = collectMats(root);
-  const pl = { kind, root, lift: 0, dim: 0, dimShown: 0, mats, lights, near: true, ...extra };
+  const pl = { kind, k, root, lift: 0, dim: 0, dimShown: 0, mats, lights, rank: Infinity, ...extra };
   places.set(k, pl);
   const e = empties.get(k); if (e) e.lines.visible = false;
   return pl;
 }
+// a layer came or went: pick up its materials, and redo the dim on the next frame
+function refreshMats(pl) { const c = collectMats(pl.root); pl.mats = c.mats; pl.lights = c.lights; pl.dimShown = -1; }
 function removePlace(k) {
   const pl = places.get(k); if (!pl || pl.kind === 'home') return;
   disposeGroup(pl.root); places.delete(k);
   const e = empties.get(k); if (e) e.lines.visible = true;
 }
 let fontsOk = false;
-function placeRoom(k, room, kind = 'guest') {
-  removePlace(k);
-  const root = new THREE.Group(); root.position.copy(posOf(k)); scene.add(root);
-  const built = buildRecipeRoom(root, room, fontsOk);
-  const farView = buildFarView(built.group);   // the cheap version drawn when the camera is far away
-  return addPlace(k, kind, root, { room, anims: built.anims, objGroups: built.objGroups, decor: built.decor, farView });
-}
 
 /* ---------- state ---------- */
 let homeRm = null;
@@ -222,6 +221,7 @@ function fitRange() { // how far the camera can pull back and see, for the curre
 }
 function goRoom(k) {
   const moved = setFocus(k); activeHot = null; activeObj = null;
+  const pl = places.get(k); if (pl) pl.wantDetail = true;   // its full detail is built first (see jobs)
   // the camera aims at where the room ends up, so it glides in as the room rises
   const t = posOf(k).add(new THREE.Vector3(0, LIFT + 1.2, 0));
   flyTo(t.clone().addScaledVector(ROOM_DIR, roomDist() * 1.15), t, moved ? TRANS_MS : 1100, moved && trans ? trans.t0 : undefined);
@@ -246,7 +246,9 @@ function focusHot(id) {
   showHot(h); renderChrome();
 }
 function focusObj(k, i) {
-  const pl = places.get(k); if (!pl || !pl.objGroups?.[i]) return;
+  const pl = places.get(k); if (!pl) return;
+  if (pl.kind === 'guest') detailNow(pl);
+  if (!pl.objGroups?.[i]) return;
   const moved = setFocus(k); if (moved) aimShadow(posOf(k).add(new THREE.Vector3(0, LIFT, 0)));
   activeHot = null; activeObj = { k, i };
   const wp = new THREE.Vector3(); pl.objGroups[i].getWorldPosition(wp); wp.y = LIFT + 1.4;
@@ -262,7 +264,7 @@ function updateOcclusion() {
   const f = focusPlot ? parseKey(focusPlot) : null;
   const test = k => { if (!f) return false; const [px, pz] = parseKey(k); const dx = px - f[0], dz = pz - f[1]; const b = dx >= 0 && dz >= 0 && dx + dz > 0 && dx <= 2 && dz <= 2; if (b) blocked.add(k); return b; };
   hitboxes.forEach(h => test(h.userData.plot));
-  empties.forEach((e, k) => { e.lines.visible = !places.has(k) && !buildQueue.has(k) && !blocked.has(k) && ring(k) <= gridR; });
+  empties.forEach((e, k) => { e.lines.visible = !places.has(k) && !pending.has(k) && !blocked.has(k) && ring(k) <= gridR; });
 }
 
 /* ---------- panels ---------- */
@@ -292,7 +294,8 @@ const TYPE_COLOR = { project: '#FF8A4C', interest: '#2CC4B3', about: '#F2C14E' }
 function showRoomCard(room, isPreview, justSaved) {
   setKind(room.color, isPreview ? 'Preview, not saved yet' : 'Room');
   panelBasics(room.title, room.bio || 'No bio yet.', '');
-  room.objects.forEach((o, i) => addTag(o.name, TYPE_COLOR[o.type], () => focusObj(keyOfRoom(room), i)));
+  const k = keyOfRoom(room);   // looked up now: the list of rooms can refresh while the card is open
+  room.objects.forEach((o, i) => addTag(o.name, TYPE_COLOR[o.type], () => focusObj(k, i)));
   setLinks(room.links || []);
   setActions('room');
   const mine = !isPreview && backend && room.owner === backend.me;
@@ -353,7 +356,7 @@ function renderChrome() {
   } else {
     label('Rooms');
     chip(HOME_NAME, '#E8402F', false, () => { goRoom(HOME); showHomeCard(); });
-    rooms.forEach(r => chip(r.title, r.color, false, () => { const k = keyOf(r.px, r.pz); const pl = buildNow(k); goRoom(k); if (pl) showRoomCard(pl.room); }));
+    rooms.forEach(r => chip(r.title, r.color, false, () => { const k = keyOf(r.px, r.pz); const pl = placeNow(k); goRoom(k); if (pl) showRoomCard(pl.room); }));
     if (!rooms.length) label('No other rooms yet');
   }
 }
@@ -364,7 +367,8 @@ motionLabel();
 motionBtn.addEventListener('click', () => { motionOn = !motionOn; motionLabel(); });
 
 /* ---------- saved rooms in the world ---------- */
-const sigOf = r => JSON.stringify([r.title, r.bio, r.color, r.links, r.objects]);
+// everything a room is built from: when any of it changes (a new room code), the room is rebuilt
+const sigOf = r => JSON.stringify([r.title, r.bio, r.color, r.links, r.objects, r.decor]);
 function applyRooms(list) {
   const seen = new Set(); const clean = [];
   list.slice().sort((x, y) => String(x.createdAt || '').localeCompare(String(y.createdAt || ''))).forEach(r => {
@@ -377,29 +381,144 @@ function applyRooms(list) {
   const farthest = rooms.reduce((m, r) => Math.max(m, Math.abs(r.px), Math.abs(r.pz)), 0);
   const wantR = Math.max(MIN_R, Math.min(MAX_R, farthest + 1)); if (wantR !== gridR) setGridR(wantR);
   const wanted = new Map(rooms.map(r => [keyOf(r.px, r.pz), r]));
-  [...places.entries()].forEach(([k, pl]) => { if (pl.kind === 'guest' && (!wanted.has(k) || pl.sig !== sigOf(wanted.get(k)) || pl.room.owner !== wanted.get(k).owner)) removePlace(k); });
-  buildQueue.forEach((r, k) => { if (!wanted.has(k)) buildQueue.delete(k); });
-  // new rooms are built a few per frame, nearest first, so a big grid never freezes the page
-  wanted.forEach((r, k) => { const pl = places.get(k); if (pl && pl.kind === 'guest') { pl.room = r; return; } if (!pl) buildQueue.set(k, r); });
-  updateOcclusion(); renderChrome();
+  // gone rooms leave now. New and changed ones wait for their far version (a changed room keeps showing
+  // its old version until then, so it never blinks out)
+  [...places.entries()].forEach(([k, pl]) => { if (pl.kind === 'guest' && !wanted.has(k)) removePlace(k); });
+  pending.forEach((r, k) => { if (!wanted.has(k)) { pending.delete(k); dropStaged(k); } });
+  wanted.forEach((r, k) => {
+    const pl = places.get(k);
+    if (pl?.kind === 'guest' && pl.sig === sigOf(r) && pl.room.owner === r.owner) { pl.room = r; pending.delete(k); }
+    else pending.set(k, r);
+  });
+  updateOcclusion(); renderChrome(); showBgLoad();
   $('addBtn').textContent = myRoom || backend?.homeOwner ? 'Your room' : 'Add your room';
 }
 
-const buildQueue = new Map();   // square -> room waiting to be built
-function buildNow(k) {
-  const r = buildQueue.get(k); if (!r) return places.get(k);
-  buildQueue.delete(k);
-  const pl = placeRoom(k, r); pl.sig = sigOf(r);
-  if (focusPlot && k !== focusPlot) { pl.dim = 1; applyDim(pl); }  // arrives already faded if another room is in focus
-  return pl;
+/* ---------- jobs: building rooms without stutter ----------
+   Each room first gets its far version: from the browser cache (about 1 ms) or by building and baking it
+   (about 15 ms). Then the rooms nearest the camera get full detail in small steps: build it (about 7 ms),
+   compile its shaders in the background, send its pictures to the graphics card a few at a time, and only
+   then swap it in. Heavy steps run while the camera is still; while it moves, only light ones do. */
+const pending = new Map();      // square -> room code whose far version isn't made yet
+let cached = new Map();         // cache key -> baked data, read from the browser cache at start
+let revealed = false;           // the loading screen is gone
+let ranked = [];                // guest rooms, nearest the camera first (updated a few times a second)
+const FULL_ROOMS = 6;           // how many of the nearest rooms show full detail (a full room is ~170 draw calls, a far one ~7)
+const AHEAD = 4;                // rooms past those that get their detail built ahead of time, so moving around doesn't wait
+const KEEP = FULL_ROOMS + AHEAD + 4;   // past this rank, a room's detail is freed again
+const nextFrame = () => new Promise(r => requestAnimationFrame(() => r()));
+
+function buildDetail(pl) {
+  const group = new THREE.Group(); group.visible = false; pl.root.add(group);
+  const built = buildRecipeRoom(group, pl.room, fontsOk);
+  pl.detail = { group, room: built.group, anims: built.anims, objGroups: built.objGroups, state: 'built' };
+  refreshMats(pl);
 }
-function pumpBuilds(budgetMs) {
-  if (!buildQueue.size) return;
-  const t0 = performance.now(), c = controls.target;
-  const order = [...buildQueue.keys()].sort((a, b) => posOf(a).distanceToSquared(c) - posOf(b).distanceToSquared(c));
-  for (const k of order) { buildNow(k); if (performance.now() - t0 > budgetMs) break; }
-  updateOcclusion();
+// show the full room once it's ready and wanted, otherwise the far version
+function showLayer(pl) {
+  const d = !!(pl.wantDetail && pl.detail?.state === 'ready');
+  pl.showingDetail = d; pl.far.visible = !d; if (pl.detail) pl.detail.group.visible = d;
+  pl.objGroups = d ? pl.detail.objGroups : null; pl.anims = d ? pl.detail.anims : null;
 }
+function dropDetail(pl) { const g = pl.detail.group; pl.detail = null; showLayer(pl); disposeGroup(g); refreshMats(pl); }
+
+// a new room that isn't cached is built and baked over a few frames: build (about 8 ms), read its pictures'
+// colours (about 5 ms), then bake it and put it on the grid (about 3 ms). staged holds it in between.
+const staged = new Map();   // square -> { sig, pl: { root, room, detail }, sampled, data }
+function dropStaged(k) { const s = staged.get(k); if (s) { disposeGroup(s.pl.root); staged.delete(k); } }
+// give the room at k its far version (and swap it in for an older version of the same room)
+function makeFar(k) {
+  const r = pending.get(k); pending.delete(k);
+  const sig = sigOf(r), key = roomCache.cacheKey(r.owner, sig);
+  let s = staged.get(k); staged.delete(k);
+  if (s && s.sig !== sig) { disposeGroup(s.pl.root); s = null; }
+  const pl = s?.pl || { root: new THREE.Group(), room: r }, root = pl.root;
+  root.position.copy(posOf(k));
+  let data = cached.get(key); cached.delete(key);
+  if (!data) {   // not cached: build it once, bake it, keep the detail
+    if (!pl.detail) buildDetail(pl);
+    data = bakeRoom(pl.detail.room); roomCache.write(key, data);
+  }
+  const far = farLayer(data, r, fontsOk); root.add(far);
+  const old = places.get(k);
+  if (old) removePlace(k);
+  scene.add(root);
+  const np = addPlace(k, 'guest', root, { room: r, sig, far, detail: pl.detail || null, showingDetail: false, wantDetail: k === focusPlot });
+  if (old) { np.lift = old.lift; np.dim = old.dim; np.rank = old.rank; }
+  else np.dim = revealed || (focusPlot && k !== focusPlot) ? 1 : 0;   // after the reveal, new rooms fade in
+  applyDim(np); showLayer(np);
+  return np;
+}
+// a room is needed right now (you clicked it): make its far version if it's still waiting
+function placeNow(k) { if (pending.has(k)) { makeFar(k); updateOcclusion(); showBgLoad(); } return places.get(k); }
+// you opened one of the room's things: its detail can't wait for the background
+function detailNow(pl) {
+  pl.wantDetail = true;
+  if (!pl.detail) buildDetail(pl);
+  pl.detail.state = 'ready'; showLayer(pl);
+}
+function nearestPending() {
+  const c = controls.target; let best = null, bd = Infinity;
+  pending.forEach((r, k) => { const d = posOf(k).distanceToSquared(c); if (d < bd) { bd = d; best = k; } });
+  return best;
+}
+// the next step for a room's far version: straight from the cache, or build / colours / bake in turn
+function farJob(k) {
+  const r = pending.get(k), sig = sigOf(r), place = () => { makeFar(k); updateOcclusion(); showBgLoad(); };
+  if (cached.has(roomCache.cacheKey(r.owner, sig))) return { kind: 'far-cached', heavy: false, run: place };
+  const s = staged.get(k);
+  if (!s || s.sig !== sig) return { kind: 'far-build', heavy: true, run: () => {
+    dropStaged(k); const pl = { root: new THREE.Group(), room: r }; buildDetail(pl); staged.set(k, { sig, pl });
+  } };
+  if (!s.sampled) return { kind: 'far-colours', heavy: true, run: () => { sampleColors(s.pl.detail.room); s.sampled = true; } };
+  return { kind: 'far-bake', heavy: false, run: place };
+}
+// the next step for a room's detail, or null while its shaders are still compiling. heavy = takes a few ms
+function detailJob(pl) {
+  const d = pl.detail;
+  if (!d) return { kind: 'detail-build', heavy: true, run: () => buildDetail(pl) };
+  if (d.state === 'built') return { kind: 'detail-compile', heavy: true, run: () => {   // ~9 ms: three sets up each material up front
+    d.state = 'warming'; d.tex = [];
+    d.group.traverse(o => { if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => { if (m.map && !m.map.userData.shared) d.tex.push(m.map); }); });
+    renderer.compileAsync(d.group, camera, scene).then(() => { d.compiled = true; }, () => { d.compiled = true; });
+  } };
+  if (d.state === 'warming' && d.tex.length) return { kind: 'detail-pictures', heavy: false, run: () => { for (let n = 0; n < 3 && d.tex.length; n++) renderer.initTexture(d.tex.pop()); } };
+  if (d.state === 'warming' && d.compiled) return { kind: 'detail-show', heavy: false, run: () => { d.state = 'ready'; showLayer(pl); } };
+  return null;
+}
+function nextJob(calm) {
+  // heavy steps wait for the camera to be still, except for the room you're flying into (one step every 8th frame)
+  const ok = (j, focused) => j && (calm || !j.heavy || (focused && jobFrame % 8 === 0)) ? j : null;
+  // 1. the room you're in
+  const f = focusPlot ? places.get(focusPlot) : null;
+  if (f?.kind === 'guest' && f.detail?.state !== 'ready') { const j = ok(detailJob(f), true); if (j) return j; }
+  // 2. far versions for rooms that don't have one yet, nearest first
+  if (pending.size) { const j = ok(farJob(nearestPending())); if (j) return j; }
+  // 3. detail for the nearest rooms, then a few ahead
+  for (const pl of ranked) {
+    if (pl.rank >= FULL_ROOMS + AHEAD) break;
+    if (pl.farOut || pl.detail?.state === 'ready' || places.get(pl.k) !== pl) continue;   // (a replaced room is skipped)
+    const j = ok(detailJob(pl)); if (j) return j;
+  }
+  // 4. free the detail of rooms far down the list
+  for (const pl of ranked) if (pl.detail && pl.rank >= KEEP && !pl.wantDetail && places.get(pl.k) === pl) return { kind: 'detail-free', heavy: false, run: () => dropDetail(pl) };
+  return null;
+}
+let lastMove = 0, jobFrame = 0;
+controls.addEventListener('change', () => { lastMove = performance.now(); });
+function runJobs(now) {
+  if (!revealed) return;   // before the reveal, preload() does this in bigger chunks
+  const calm = !tween && !trans && now - lastMove > 250;
+  const t0 = performance.now(); jobFrame++;
+  // still: steps for up to 6 ms. moving: one light step a frame
+  for (;;) {
+    const j = nextJob(calm); if (!j) break;
+    j.run();
+    if (!calm || performance.now() - t0 > 6) break;
+  }
+}
+// the small "Loading rooms" line under the hint, while far versions are still coming in after the reveal
+function showBgLoad() { const el = $('bgLoad'); if (!el) return; el.hidden = !revealed || !pending.size; if (!el.hidden) el.textContent = `Loading ${pending.size} more room${pending.size === 1 ? '' : 's'}…`; }
 
 /* ---------- add your room ---------- */
 $('promptText').value = DEEP_PROMPT;
@@ -462,7 +581,7 @@ async function copyText(text, statusEl, okMsg) {
     ta.focus(); ta.select();
   }
 }
-$('addBtn').addEventListener('click', () => { if (backend?.homeOwner) { closeAdd(); goRoom(HOME); showHomeCard(); } else if (myRoom && addPanel.hidden) { const k = keyOf(myRoom.px, myRoom.pz); buildNow(k); goRoom(k); showRoomCard(places.get(k)?.room || myRoom); } else openAdd(); });
+$('addBtn').addEventListener('click', () => { if (backend?.homeOwner) { closeAdd(); goRoom(HOME); showHomeCard(); } else if (myRoom && addPanel.hidden) { const k = keyOf(myRoom.px, myRoom.pz); placeNow(k); goRoom(k); showRoomCard(places.get(k)?.room || myRoom); } else openAdd(); });
 $('addClose').addEventListener('click', closeAdd);
 $('copyPrompt').addEventListener('click', () => copyText(DEEP_PROMPT, $('copyStatus'), 'Copied. Paste it into your own Claude.'));
 // one click: check the code, pick the square, save, then fly to the new room
@@ -484,10 +603,13 @@ $('saveBtn').addEventListener('click', async () => {
   btn.disabled = true; st.textContent = 'Saving...';
   try {
     await backend.saveRoom(room, px, pz);
-    addPanel.hidden = true; delete addPanel.dataset.target; st.textContent = '';
     try { sessionStorage.removeItem('rg-code'); } catch {}
     applyRooms(await backend.listRooms());
-    const pl = buildNow(k); goRoom(k); if (pl) showRoomCard(pl.room, false, true);
+    // build your room in one go (far version and full detail), after the message has had a frame to show
+    st.textContent = 'Building your room…'; await nextFrame();
+    const pl = placeNow(k); if (pl) detailNow(pl);
+    addPanel.hidden = true; delete addPanel.dataset.target; st.textContent = '';
+    goRoom(k); if (pl) showRoomCard(pl.room, false, true);
   } catch (e) { st.textContent = e?.message || 'Could not save. Try again.'; }
   finally { btn.disabled = false; }
 });
@@ -540,7 +662,7 @@ function describe(h) {
   if (h.type === 'hot') { const x = HOT_BY_ID[h.id]; return { text: x.name, color: KIND[x.kind].color }; }
   if (h.type === 'obj') { const o = places.get(h.k).room.objects[h.i]; return { text: o.name, color: TYPE_COLOR[o.type] }; }
   if (h.id === HOME) return { text: HOME_NAME, color: '#E8402F' };
-  const pl = places.get(h.id), q = buildQueue.get(h.id);
+  const pl = places.get(h.id), q = pending.get(h.id);
   if (pl || q) { const r = pl ? pl.room : q; return { text: r.title, color: r.color }; }
   return { text: addPanel.hidden ? 'Empty square: add your room here' : 'Put my room here', color: GRID };
 }
@@ -599,43 +721,15 @@ canvas.addEventListener('pointerup', e => {
   const h = pick(); if (!h) return;
   if (h.type === 'hot') { focusHot(h.id); return; }
   if (h.type === 'obj') { focusObj(h.k, h.i); return; }
-  const k = h.id, pl = buildNow(k);
+  const k = h.id, pl = placeNow(k);
   if (k === HOME) { if (focusPlot !== HOME) { goRoom(HOME); showHomeCard(); } return; }
   if (pl) { if (focusPlot !== k) goRoom(k); showRoomCard(pl.room); return; }
   if (!focusPlot) openAdd(k);
 });
 window.addEventListener('keydown', e => { if (e.key !== 'Escape') return; if (!addPanel.hidden) closeAdd(); else if (activeHot || activeObj) backToRoom(); else if (focusPlot !== null) goOverview(); else hidePanel(); });
 
-/* ---------- boot ---------- */
 function resize() { const w = canvas.clientWidth, h = canvas.clientHeight; renderer.setSize(w, h, false); camera.aspect = w / Math.max(1, h); camera.updateProjectionMatrix(); fitRange(); }
 new ResizeObserver(resize).observe(canvas); resize();
-const withTimeout = (p, ms) => Promise.race([p, new Promise(r => setTimeout(() => r(false), ms))]);
-fontsOk = await withTimeout(Promise.all([document.fonts.load('700 64px "Chakra Petch"'), document.fonts.load('600 40px Caveat')]).then(() => true).catch(() => false), 3000);
-setGridR(MIN_R);
-homeRm = createHomeRoom(homeRoot, fontsOk);
-addPlace(HOME, 'home', homeRoot, { room: null });
-try { const saved = sessionStorage.getItem('rg-code'); if (saved) $('codeInput').value = saved; } catch {}
-
-camera.position.set(170, 190, 170); controls.target.set(0, 0, 0);
-renderChrome();
-setControlMode(true);
-goOverview();   // open on the whole grid
-$('loading').classList.add('gone');
-
-/* ---------- load saved rooms ---------- */
-backend = await createBackend();
-if (backend.mode === 'demo') showNotice('Demo mode: rooms you save stay in this browser only until Supabase is connected (see README).');
-else if (backend.authError) showNotice('Google sign-in did not work: ' + backend.authError);
-try { applyRooms(await backend.listRooms()); } catch (e) { console.warn(e); showNotice(`Could not load rooms right now. Showing ${HOME_NAME} only.`); }
-if (focusPlot === null && gridR > MIN_R) goOverview();
-backend.subscribe(list => applyRooms(list));
-backend.onAuth(async () => { try { applyRooms(await backend.listRooms()); } catch {} if (!addPanel.hidden) renderAddState(); });
-// back from Google sign-in: reopen the add panel and finish adding the room
-let resume = null; try { resume = sessionStorage.getItem('rg-resume'); sessionStorage.removeItem('rg-resume'); } catch {}
-if (resume && backend.me && $('codeInput').value.trim()) {
-  openAdd(resume !== '1' ? resume : undefined);
-  $('saveBtn').click();
-}
 function showNotice(msg) { const n = $('notice'); n.textContent = msg; n.hidden = false; }
 
 /* ---------- keep it smooth: lower the sharpness when frames get slow ---------- */
@@ -651,7 +745,7 @@ function applyStep() {
   resize(); renderer.shadowMap.needsUpdate = true;
   try { localStorage.setItem('cubby-quality', String(step)); } catch {}
 }
-let spWin = 0, spFrames = 0, spLast = 0, spGood = 0, spStart = performance.now() + 3000;
+let spWin = 0, spFrames = 0, spLast = 0, spGood = 0, spStart = Infinity;   // starts after the reveal, so loading never counts
 function trackSpeed(now) {
   const gap = now - spLast; spLast = now;
   if (now < spStart || document.hidden || gap > 250) return;   // skip start-up and tab switches
@@ -667,7 +761,6 @@ applyStep();
 /* ---------- loop ---------- */
 const clock = new THREE.Clock();
 let elapsed = 0, tvAcc = 0, lastLod = 0, frame = 0;
-const FULL_ROOMS = 6;   // how many of the nearest rooms get full detail (a full room is ~170 draw calls, a baked one ~7)
 const ease = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 function loop() {
   const dt = Math.min(clock.getDelta(), 0.05); frame++;
@@ -704,24 +797,21 @@ function loop() {
     groundMat.uniforms.uTime.value = elapsed;
     stepRain(dt);
     if (camera.position.distanceTo(posOf(HOME)) < 75) { homeRm.animators.forEach(f => f(dt, elapsed)); tvAcc += dt; if (tvAcc > 1 / 24) { tvAcc = 0; homeRm.drawTV(elapsed); } }
-    places.forEach(pl => { if (pl.anims && pl.near && pl.root.visible) pl.anims.forEach(f => f(dt, elapsed)); });
+    places.forEach(pl => { if (pl.anims && pl.showingDetail && pl.root.visible) pl.anims.forEach(f => f(dt, elapsed)); });
   }
   const nowMs = performance.now();
-  // level of detail: the few rooms nearest the camera (and the one you're in) are drawn in full; the rest from
-  // their baked copy (same things and colours, a handful of draw calls). Rooms lost in the fog are not drawn at all.
+  // level of detail: the few rooms nearest the camera (and the one you're in) show full detail once it's ready;
+  // the rest show their far version. Rooms lost in the fog are not drawn at all.
   if (nowMs - lastLod > 300) {
     lastLod = nowMs; const fogOut = scene.fog.far + 20;
-    const guests = [];
+    ranked = [];
     places.forEach((pl, k) => {
       pl.camD = camera.position.distanceTo(pl.root.position);
       pl.farOut = k !== focusPlot && pl.camD > fogOut;
-      if (pl.kind !== 'home') guests.push([k, pl]);
+      if (pl.kind === 'guest') ranked.push(pl);
     });
-    guests.sort((a, b) => a[1].camD - b[1].camD);
-    guests.forEach(([k, pl], i) => {
-      const near = k === focusPlot || (i < FULL_ROOMS && !pl.farOut);
-      if (near !== pl.near) { pl.near = near; if (pl.farView) setFar(pl.farView, !near); }
-    });
+    ranked.sort((a, b) => a.camD - b.camD);
+    ranked.forEach((pl, i) => { pl.rank = i; pl.wantDetail = pl.k === focusPlot || (i < FULL_ROOMS && !pl.farOut); showLayer(pl); });
   }
   if (tween) {
     const k = Math.min(1, (performance.now() - tween.start) / tween.ms), e = ease(k);
@@ -729,13 +819,83 @@ function loop() {
     if (k >= 1) { tween = null; controls.enabled = true; controls.maxDistance = zoomOutLimit(); }
   }
   if (!tween) clampPan();
-  pumpBuilds(tween || trans ? 4 : 10);
   controls.update();
   // shadows: every frame while things fly around, every 2nd frame inside a room, every 8th on the grid
   if (trans || tween || frame % (focusPlot ? 2 : 8) === 0) renderer.shadowMap.needsUpdate = true;
   trackSpeed(nowMs);
   if (pointerIn && !tween && (pointerDirty || frame % 10 === 0)) { pointerDirty = false; setHover(pick()); }
   renderer.render(scene, camera);
+  runJobs(performance.now());   // background room building, after this frame's drawing is sent
   requestAnimationFrame(loop);
 }
-loop();
+
+/* ---------- boot: the heavy work happens behind the loading screen ----------
+   1. fonts and Enhe's room. 2. the list of rooms, and any baked rooms already in this browser's cache.
+   3. every room's far version (cached, or built and baked), with a progress bar. 4. every shader compiled and
+   everything sent to the graphics card. Then the reveal and the fly-in. Full detail for the nearest rooms
+   comes after that, in the background (see jobs). A slow database never holds the page: after 8 seconds the
+   grid shows with Enhe's room, and the other rooms fade in as they arrive. */
+const withTimeout = (p, ms) => Promise.race([p, new Promise(r => setTimeout(() => r(false), ms))]);
+const breathe = () => new Promise(r => setTimeout(r, 0));   // let the page paint the progress bar (works in background tabs too)
+function setLoad(text, frac) { $('loadText').textContent = text; $('loadBar').style.transform = `scaleX(${frac})`; }
+function reveal() {
+  revealed = true;
+  $('loading').classList.add('gone');
+  goOverview();                          // the fly-in
+  spStart = performance.now() + 4000;    // judge the frame rate only once things have settled
+  showBgLoad();
+  loop();
+}
+
+setLoad('Building the grid…', 0.04);
+fontsOk = await withTimeout(Promise.all([document.fonts.load('700 64px "Chakra Petch"'), document.fonts.load('600 40px Caveat')]).then(() => true).catch(() => false), 3000);
+setGridR(MIN_R);
+homeRm = createHomeRoom(homeRoot, fontsOk);
+addPlace(HOME, 'home', homeRoot, { room: null });
+try { const saved = sessionStorage.getItem('rg-code'); if (saved) $('codeInput').value = saved; } catch {}
+camera.position.set(170, 190, 170); controls.target.set(0, 0, 0); controls.update();
+renderChrome(); setControlMode(true);
+setLoad('Loading rooms…', 0.1);
+
+const roomsP = (async () => {
+  backend = await createBackend();
+  if (backend.mode === 'demo') showNotice('Demo mode: rooms you save stay in this browser only until Supabase is connected (see README).');
+  else if (backend.authError) showNotice('Google sign-in did not work: ' + backend.authError);
+  const list = await backend.listRooms();
+  cached = await roomCache.readMany(list.map(r => roomCache.cacheKey(r.owner, sigOf(r))));
+  return list;
+})().catch(e => { console.warn(e); showNotice(`Could not load rooms right now. Showing ${HOME_NAME} only.`); return null; });
+
+const early = await withTimeout(roomsP, 8000);
+if (early) {
+  applyRooms(early);
+  const total = pending.size, until = performance.now() + 8000;   // a huge grid: the rest load after the reveal
+  while (pending.size && performance.now() < until) {
+    const t0 = performance.now();
+    while (pending.size && performance.now() - t0 < 50) makeFar(nearestPending());
+    setLoad(`Loading rooms ${total - pending.size} of ${total}`, 0.1 + 0.8 * (total - pending.size) / Math.max(1, total));
+    await breathe();
+  }
+  updateOcclusion();
+}
+setLoad('Almost there…', 0.94);
+await breathe();
+await withTimeout(renderer.compileAsync(scene, camera).then(() => true, () => true), 5000);   // every shader, off the main thread where the browser allows
+renderer.shadowMap.needsUpdate = true;
+renderer.render(scene, camera);   // hidden under the loading screen: sends the rooms and their pictures to the graphics card
+setLoad('Almost there…', 1);
+reveal();
+
+const list = early || await roomsP;   // a slow database: the rooms arrive after the reveal and fade in
+if (list && !early) applyRooms(list);
+if (backend) {
+  backend.subscribe(l => applyRooms(l));
+  backend.onAuth(async () => { try { applyRooms(await backend.listRooms()); } catch {} if (!addPanel.hidden) renderAddState(); });
+  roomCache.keepOnly(rooms.map(r => roomCache.cacheKey(r.owner, sigOf(r))));   // forget rooms that changed or left
+  // back from Google sign-in: reopen the add panel and finish adding the room
+  let resume = null; try { resume = sessionStorage.getItem('rg-resume'); sessionStorage.removeItem('rg-resume'); } catch {}
+  if (resume && backend.me && $('codeInput').value.trim()) {
+    openAdd(resume !== '1' ? resume : undefined);
+    $('saveBtn').click();
+  }
+}
