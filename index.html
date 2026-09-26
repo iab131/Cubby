@@ -27,13 +27,14 @@
     <div class="tools">
       <button class="tool" id="viewBtn" type="button">Back to the grid</button>
       <button class="tool accent" id="addBtn" type="button">Add your room</button>
-      <button class="tool" id="motionBtn" type="button">Pause motion</button>
+      <button class="tool" id="motionBtn" type="button"><svg class="i-pause" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg><svg class="i-play" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg><span class="lbl">Pause motion</span></button>
     </div>
   </header>
 
   <aside class="panel" id="panel" hidden aria-live="polite">
     <div class="panel-top">
       <div class="kind" id="pKind"><span class="dot"></span><span></span></div>
+      <button class="x" id="pClose" type="button" aria-label="Hide the card"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
     </div>
     <p class="saved" id="pSaved" hidden><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><span>Your room is on the grid. Everyone who opens Cubby can see it now.</span></p>
     <h2 id="pTitle"></h2>
