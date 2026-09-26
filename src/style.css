@@ -21,11 +21,13 @@ html, body { height: 100%; margin: 0; }
 body { background: var(--ground); color: var(--ink); font-family: var(--body); font-size: 15px; overflow: hidden; -webkit-font-smoothing: antialiased; }
 #app { position: relative; height: 100%; overflow: hidden; background: var(--ground); }
 #scene { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; outline: none; }
+button { touch-action: manipulation; }
 button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid var(--grid); outline-offset: 2px; }
 
 /* ---------- header ---------- */
 .brand { position: absolute; top: calc(18px + env(safe-area-inset-top, 0px)); left: 20px; right: 20px; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; pointer-events: none; }
 .brand > * { pointer-events: auto; }
+.brand > .title { pointer-events: none; }   /* just text: drags on it still move the grid */
 .title { display: flex; flex-direction: column; max-width: 560px; }
 .mark { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 .flag { width: 20px; height: 12px; background: conic-gradient(#F3EFE8 25%, #070B0A 0 50%, #F3EFE8 0 75%, #070B0A 0) 0 0 / 6px 6px; border-radius: 1px; box-shadow: 0 0 0 1px #3A4245; }
@@ -39,6 +41,7 @@ h1 { margin: 0; font-family: var(--display); font-weight: 700; font-size: clamp(
 .tool:hover { border-color: #5A6468; }
 .tool.accent { background: var(--grid); color: #03140C; border-color: var(--grid); }
 .tool.accent:hover { background: #7BFFCB; border-color: #7BFFCB; }
+#motionBtn svg { display: none; }   /* the icon stands in for the label on small screens */
 
 /* ---------- dock: places and things ---------- */
 .dock { position: absolute; left: 0; right: 0; bottom: 0; padding: 28px 20px calc(16px + env(safe-area-inset-bottom, 0px)); display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; background: linear-gradient(180deg, rgba(7,11,10,0) 0%, rgba(7,11,10,.9) 55%); }
@@ -56,6 +59,7 @@ h1 { margin: 0; font-family: var(--display); font-weight: 700; font-size: clamp(
 .kind { font-size: 14px; font-weight: 600; color: var(--c); display: flex; align-items: center; gap: 8px; }
 .x { width: 34px; height: 34px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--ink); cursor: pointer; display: grid; place-items: center; flex: none; }
 .x:hover { border-color: #5A6468; }
+#pClose { display: none; }   /* small screens only: "Look around" does this on big ones */
 .panel h2 { margin: 0; font-family: var(--display); font-weight: 700; font-size: 28px; line-height: 1.05; letter-spacing: -.01em; text-wrap: balance; overflow-wrap: anywhere; }
 .panel p { margin: 0; font-size: 16px; line-height: 1.5; color: var(--soft); overflow-wrap: anywhere; }
 .tags { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -113,12 +117,55 @@ input::placeholder, textarea::placeholder { color: #626B6F; }
 @keyframes blink { 50% { opacity: .25; } }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
-@media (max-width: 700px) {
-  .brand { flex-direction: column; left: 16px; right: 16px; }
-  .tools { justify-content: flex-start; }
-  .hint { font-size: 14px; }
-  .dock { padding-left: 16px; padding-right: 16px; }
-  .panel { top: auto; bottom: 84px; right: 16px; left: 16px; width: auto; max-height: 55%; }
-  .panel h2 { font-size: 24px; }
+/* ---------- small screens: phones, and short landscape screens ----------
+   The rooms need the room, so the chrome gets compact: a one-line title, one row of buttons, and a card that
+   leaves the middle of the screen free (the camera frames the room in whatever the UI leaves free, see main.js). */
+@media (max-width: 700px), (max-height: 520px) {
+  h1 { font-size: 26px; line-height: 1.05; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mark { margin-bottom: 4px; }
+  .hint { font-size: 14px; margin-top: 6px; }
+  .tool { min-height: 38px; padding: 0 12px; font-size: 14px; }
+  #motionBtn { width: 38px; padding: 0; justify-content: center; }
+  #motionBtn .lbl { display: none; }
+  #motionBtn:not(.paused) .i-pause, #motionBtn.paused .i-play { display: block; }
+  /* the card stays short: phone browsers' own bars already take a slice of the height */
+  .panel { padding: 12px 16px 14px; gap: 8px; }
+  .panel:not(.add) .panel-top { margin: -4px -6px -2px 0; }   /* the hide button sits in the corner without adding height */
+  #pClose { display: grid; width: 32px; height: 32px; border-color: transparent; color: var(--muted); }
+  .panel h2 { font-size: 20px; }
+  .panel p { font-size: 15px; line-height: 1.45; }
+  /* the bio shows two lines; a tap opens the rest, which scrolls if it's long */
+  #pBody { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; cursor: pointer; }
+  #pBody.open { display: block; max-height: 5.8em; overflow-y: auto; overscroll-behavior: contain; }
+  .tags { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -16px; padding: 0 16px; }
+  .tags::-webkit-scrollbar { display: none; }
+  .tags:empty { display: none; }
+  .tag { flex: none; min-height: 34px; }
+  .actions { padding-top: 10px; }
+  .link, .next { min-height: 38px; }
+  /* a room card's buttons repeat the header's "Back to the grid" and the hide button, so they go */
+  .panel[data-kind="room"] .actions { display: none; }
+  .mine { font-size: 13px; }
+  .text-btn { font-size: 13px; min-height: 28px; padding: 4px 0; }
+  /* while a card is open it lists the room's things and the way back, so the dock and the hint step aside */
+  #app:has(.panel:not([hidden])) :is(.dock, .hint) { display: none; }
 }
+/* phones: header on top, cards as sheets along the bottom */
+@media (max-width: 700px) {
+  .brand { flex-direction: column; top: calc(12px + env(safe-area-inset-top, 0px)); left: 16px; right: 16px; gap: 10px; }
+  .title { max-width: 100%; }
+  .tools { justify-content: flex-start; }
+  .dock { padding: 18px 16px calc(12px + env(safe-area-inset-bottom, 0px)); }
+  .panel { top: auto; left: 0; right: 0; bottom: 0; width: auto; max-height: 45%; border-width: 2px 0 0; border-radius: 14px 14px 0 0; padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px)); box-shadow: 0 -16px 40px rgba(0, 0, 0, .5); }
+  .panel.add { max-height: 62%; }
+}
+/* short landscape screens: header on top, cards in a column on the right */
+@media (max-height: 520px) and (min-width: 701px) {
+  .brand { top: calc(10px + env(safe-area-inset-top, 0px)); left: max(16px, env(safe-area-inset-left, 0px)); right: max(16px, env(safe-area-inset-right, 0px)); }
+  .title { max-width: min(560px, 50%); }
+  .panel { top: calc(58px + env(safe-area-inset-top, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); width: min(360px, 46%); max-height: calc(100% - 70px - env(safe-area-inset-top, 0px)); }
+  .dock { padding: 14px max(16px, env(safe-area-inset-right, 0px)) calc(10px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px)); }
+}
+/* a text box under 16px makes phones zoom the whole page in when it's tapped */
+@media (pointer: coarse) { input, textarea, #promptText, #codeInput { font-size: 16px; } }
 @media (prefers-reduced-motion: reduce) { .loading, .load-bar span { transition: none; } .bg-load::before { animation: none; } }

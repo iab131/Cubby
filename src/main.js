@@ -19,6 +19,7 @@ const keyOf = (px, pz) => `${px}_${pz}`;
 const parseKey = k => k.split('_').map(Number);
 const posOf = k => { const [px, pz] = parseKey(k); return new THREE.Vector3(px * S, 0, pz * S); };
 const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const touch = matchMedia('(pointer: coarse)').matches;
 const $ = id => document.getElementById(id);
 
 let rooms = [];      // saved rooms: recipe fields + owner, px, pz
@@ -62,6 +63,7 @@ function clampPan() {
 }
 const DIR = new THREE.Vector3(1, 0.78, 1).normalize();
 const ROOM_DIR = new THREE.Vector3(1, 0.5, 1).normalize();
+const OBJ_DIR = new THREE.Vector3(0.6, 0.55, 1).normalize();
 const hemi = new THREE.HemisphereLight('#B7C8FF', '#2E3A30', 0.9); scene.add(hemi);
 const key = new THREE.DirectionalLight('#FFE1BE', 1.4);
 key.castShadow = true; key.shadow.mapSize.set(2048, 2048);
@@ -200,14 +202,48 @@ let hovered = null;
 let motionOn = !reduced;
 
 /* ---------- camera ---------- */
+// On phones (and short landscape screens) the header, the card and the dock cover much of the screen, so the view is
+// framed to the part they leave free: what you look at sits in the middle of it, far enough back to fit inside it.
+// On bigger screens the whole screen counts as free and nothing moves.
+const compactMQ = matchMedia('(max-width: 700px), (max-height: 520px)');
+let free = { x: 0, y: 0, w: 1, h: 1 };   // css px from the canvas's top left
+function measureFree() {
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  let top = 0, bottom = H, right = W;
+  if (compactMQ.matches) {
+    const c = canvas.getBoundingClientRect();
+    const box = el => { const b = el?.getBoundingClientRect(); return b && b.width && b.height ? b : null; };
+    document.querySelectorAll('.brand > .title, .brand > .tools').forEach(el => { const b = box(el); if (b) top = Math.max(top, b.bottom - c.top); });
+    const d = box($('dock').firstElementChild); if (d) bottom = Math.min(bottom, d.top - c.top);   // the chips, not the fade above them
+    // a card: a sheet along the bottom on phones, a column on the right on short wide screens
+    [$('panel'), $('addPanel')].forEach(el => { const b = box(el); if (!b) return; if (b.width > W * 0.8) bottom = Math.min(bottom, b.top - c.top); else right = Math.min(right, b.left - c.left); });
+    top += 8; bottom -= 8;
+  }
+  free = { x: 0, y: top, w: Math.max(1, right), h: Math.max(1, bottom - top) };
+}
+// the view slides to the middle of the free part (the rendered picture shifts, the camera itself doesn't).
+// During a flight it slides on the flight's own clock, so opening a room is one motion, not a tilt and then a zoom.
+const viewOff = { x: 0, y: 0 };
+function applyViewOffset() { const W = Math.max(1, canvas.clientWidth), H = Math.max(1, canvas.clientHeight); camera.setViewOffset(W, H, viewOff.x, viewOff.y, W, H); }
+const offTarget = () => [canvas.clientWidth / 2 - (free.x + free.w / 2), canvas.clientHeight / 2 - (free.y + free.h / 2)];
+function setViewOff(x, y) { if (Math.abs(x - viewOff.x) + Math.abs(y - viewOff.y) < 0.05) return; viewOff.x = x; viewOff.y = y; applyViewOffset(); }
+// outside a flight (a card opening or closing) it follows gently
+function stepViewOffset(dt) { const [tx, ty] = offTarget(), s = reduced ? 1 : Math.min(1, dt * 6); setViewOff(viewOff.x + (tx - viewOff.x) * s, viewOff.y + (ty - viewOff.y) * s); }
 let tween = null;
+const flyEnd = new THREE.Vector3();
+// fly to look at target from dist() away along dir. dist is asked again every frame, so the flight still lands right
+// when a card opens just after it starts (that changes how much of a phone screen is free).
 // the zoom-out limit is lifted while the camera flies, and set again (for the grid or the room) when it lands
-function flyTo(pos, target, ms = 1100, start = performance.now()) { tween = { p0: camera.position.clone(), t0: controls.target.clone(), p1: pos, t1: target, start, ms: reduced ? 1 : ms }; controls.enabled = false; controls.maxDistance = Infinity; }
+function flyTo(target, dir, dist, ms = 1100, start = performance.now()) { tween = { p0: camera.position.clone(), t0: controls.target.clone(), o0: { ...viewOff }, t1: target, dir, dist, start, ms: reduced ? 1 : ms }; controls.enabled = false; controls.maxDistance = Infinity; }
 // change which room is in focus: the room rises, the rest fades to black and the camera flies in, all together
 function setFocus(k) { if (focusPlot === k) return false; focusPlot = k; setControlMode(k === null); startTrans(); updateOcclusion(); return true; }
-const aspect = () => canvas.clientWidth / Math.max(1, canvas.clientHeight);
-function roomDist() { const a = aspect(); return a < 0.7 ? 40 : a < 1 ? 33 : a < 1.4 ? 27 : 24; }
-function overviewDist() { return (aspect() < 0.8 ? 215 : 128) * Math.max(7, 2 * gridR + 1) / 9; }
+const aspect = () => free.w / free.h;
+// a distance picked for a wide screen, stepped back so the same view fits the free part of a phone screen
+// (further back when that part is narrower than `wide`, and when the UI leaves only a slice of the height, though
+// never more than 2.5 times, so a tall form doesn't shrink the grid to nothing)
+const fitDist = (d, wide = 1.3) => { const H = canvas.clientHeight; return compactMQ.matches ? d * Math.max(1, wide / aspect()) * H / Math.max(free.h, H * 0.4) : d; };
+function roomDist() { const a = aspect(); return compactMQ.matches ? fitDist(24) : a < 0.7 ? 40 : a < 1 ? 33 : a < 1.4 ? 27 : 24; }
+function overviewDist() { return (compactMQ.matches ? fitDist(128, 0.77) : aspect() < 0.8 ? 215 : 128) * Math.max(7, 2 * gridR + 1) / 9; }
 // how far you can scroll out: well past the whole-grid view on the grid, a little past the starting view in a room
 const GRID_ZOOM_OUT = 2.0;
 const zoomOutLimit = () => focusPlot === null ? overviewDist() * GRID_ZOOM_OUT : roomDist() * 1.15 * 1.6;
@@ -224,7 +260,7 @@ function goRoom(k) {
   const pl = places.get(k); if (pl) pl.wantDetail = true;   // its full detail is built first (see jobs)
   // the camera aims at where the room ends up, so it glides in as the room rises
   const t = posOf(k).add(new THREE.Vector3(0, LIFT + 1.2, 0));
-  flyTo(t.clone().addScaledVector(ROOM_DIR, roomDist() * 1.15), t, moved ? TRANS_MS : 1100, moved && trans ? trans.t0 : undefined);
+  flyTo(t, ROOM_DIR, () => roomDist() * 1.15, moved ? TRANS_MS : 1100, moved && trans ? trans.t0 : undefined);
   aimShadow(posOf(k).add(new THREE.Vector3(0, LIFT, 0)));
   renderChrome();
 }
@@ -234,7 +270,7 @@ function myRoomKey() { return backend?.homeOwner ? HOME : myRoom ? keyOf(myRoom.
 function goOverview() {
   const moved = setFocus(null); activeHot = null; activeObj = null; hidePanel();
   const k = myRoomKey(), t = k ? posOf(k) : new THREE.Vector3(0, 0, 0), dir = new THREE.Vector3(1, 1.25, 1).normalize();
-  flyTo(t.clone().addScaledVector(dir, overviewDist()), t, moved ? TRANS_MS : 1400, moved && trans ? trans.t0 : undefined);
+  flyTo(t, dir, overviewDist, moved ? TRANS_MS : 1400, moved && trans ? trans.t0 : undefined);
   renderChrome();
 }
 function focusHot(id) {
@@ -242,7 +278,7 @@ function focusHot(id) {
   const moved = setFocus(HOME); if (moved) aimShadow(new THREE.Vector3(0, LIFT, 0));
   activeHot = id; activeObj = null;
   const t = new THREE.Vector3(h.t[0], h.t[1] + LIFT, h.t[2]), dir = new THREE.Vector3(...h.dir).normalize();
-  flyTo(t.clone().addScaledVector(dir, h.d * (canvas.clientWidth < 700 ? 1.35 : 1)), t, moved ? TRANS_MS : 1100, moved && trans ? trans.t0 : undefined);
+  flyTo(t, dir, () => fitDist(h.d), moved ? TRANS_MS : 1100, moved && trans ? trans.t0 : undefined);
   showHot(h); renderChrome();
 }
 function focusObj(k, i) {
@@ -252,7 +288,7 @@ function focusObj(k, i) {
   const moved = setFocus(k); if (moved) aimShadow(posOf(k).add(new THREE.Vector3(0, LIFT, 0)));
   activeHot = null; activeObj = { k, i };
   const wp = new THREE.Vector3(); pl.objGroups[i].getWorldPosition(wp); wp.y = LIFT + 1.4;
-  flyTo(wp.clone().addScaledVector(new THREE.Vector3(0.6, 0.55, 1).normalize(), canvas.clientWidth < 700 ? 11 : 8.5), wp, moved ? TRANS_MS : 1100, moved && trans ? trans.t0 : undefined);
+  flyTo(wp, OBJ_DIR, () => fitDist(8.5), moved ? TRANS_MS : 1100, moved && trans ? trans.t0 : undefined);
   showObj(pl.room, i); renderChrome();
 }
 
@@ -276,9 +312,10 @@ function setLinks(list) {
   list.filter(l => l && l.url).forEach(l => { const a = document.createElement('a'); a.className = 'next'; a.href = l.url; a.target = '_blank'; a.rel = 'noopener noreferrer nofollow'; a.textContent = l.label + ' \u2197'; row.appendChild(a); });
   row.hidden = !row.childElementCount;
 }
-function panelBasics(title, body, stack) { $('pTitle').textContent = title; $('pBody').textContent = body; $('pStack').textContent = stack || ''; $('pTags').replaceChildren(); $('pSaved').hidden = true; $('mineRow').hidden = true; $('reportRow').hidden = true; $('ownerRow').hidden = true; }
+function panelBasics(title, body, stack) { $('pTitle').textContent = title; $('pBody').textContent = body; $('pBody').classList.remove('open'); $('pStack').textContent = stack || ''; $('pTags').replaceChildren(); $('pSaved').hidden = true; $('mineRow').hidden = true; $('reportRow').hidden = true; $('ownerRow').hidden = true; }
 // the buttons at the bottom of the card: a room card leads back to the grid, a thing card leads back to its room
 function setActions(kind) {
+  panel.dataset.kind = kind;   // small screens drop a room card's buttons: the header and the card's hide button cover them
   $('backBtn').lastElementChild.textContent = kind === 'room' ? 'Back to the grid' : 'Back to the room';
   $('lookBtn').hidden = kind !== 'room';
   $('nextBtn').hidden = kind === 'room';
@@ -332,6 +369,9 @@ function keyOfRoom(room) { for (const [k, pl] of places) if (pl.room === room) r
 function backToRoom() { hidePanel(); const k = focusPlot; activeHot = null; activeObj = null; if (!k) return; goRoom(k); const pl = places.get(k); if (pl?.room) showRoomCard(pl.room); else if (k === HOME) showHomeCard(); }
 $('backBtn').addEventListener('click', () => { if (activeHot || activeObj) backToRoom(); else { hidePanel(); goOverview(); } });
 $('lookBtn').addEventListener('click', () => hidePanel());
+$('pClose').addEventListener('click', () => hidePanel());
+// on small screens the bio shows two lines; a tap opens the rest
+$('pBody').addEventListener('click', () => $('pBody').classList.toggle('open'));
 $('nextBtn').addEventListener('click', () => {
   if (activeHot) { const i = HOT.findIndex(h => h.id === activeHot); focusHot(HOT[(i + 1) % HOT.length].id); return; }
   if (activeObj) { const pl = places.get(activeObj.k); if (pl) focusObj(activeObj.k, (activeObj.i + 1) % pl.room.objects.length); }
@@ -341,7 +381,9 @@ $('nextBtn').addEventListener('click', () => {
 function renderChrome() {
   const pl = focusPlot ? places.get(focusPlot) : null;
   $('placeName').textContent = focusPlot === null ? 'The grid' : focusPlot === HOME ? HOME_NAME : (pl?.room?.title || 'Empty square');
-  $('hint').textContent = focusPlot === null ? 'Every square holds someone’s room. Click one to go in. Drag to move around, right-drag to turn.' : 'Drag to turn the room. Scroll to zoom in on what’s under the mouse. Click anything to read about it.';
+  $('hint').textContent = focusPlot === null
+    ? `Every square holds someone’s room. ${touch ? 'Tap one to go in. Drag to move around, turn with two fingers.' : 'Click one to go in. Drag to move around, right-drag to turn.'}`
+    : touch ? 'Drag to turn the room. Pinch to zoom. Tap anything to read about it.' : 'Drag to turn the room. Scroll to zoom in on what’s under the mouse. Click anything to read about it.';
   $('viewBtn').hidden = focusPlot === null;   // only shown inside a room, to go back to the grid
   const n = rooms.length + 1;
   $('stats').textContent = `${n} room${n === 1 ? '' : 's'}`;
@@ -362,7 +404,8 @@ function renderChrome() {
 }
 $('viewBtn').addEventListener('click', () => goOverview());
 const motionBtn = $('motionBtn');
-const motionLabel = () => { motionBtn.textContent = motionOn ? 'Pause motion' : 'Play motion'; };
+// on small screens only the icon shows, so the label also goes on the button itself
+const motionLabel = () => { const t = motionOn ? 'Pause motion' : 'Play motion'; motionBtn.querySelector('.lbl').textContent = t; motionBtn.setAttribute('aria-label', t); motionBtn.classList.toggle('paused', !motionOn); };
 motionLabel();
 motionBtn.addEventListener('click', () => { motionOn = !motionOn; motionLabel(); });
 
@@ -728,8 +771,11 @@ canvas.addEventListener('pointerup', e => {
 });
 window.addEventListener('keydown', e => { if (e.key !== 'Escape') return; if (!addPanel.hidden) closeAdd(); else if (activeHot || activeObj) backToRoom(); else if (focusPlot !== null) goOverview(); else hidePanel(); });
 
-function resize() { const w = canvas.clientWidth, h = canvas.clientHeight; renderer.setSize(w, h, false); camera.aspect = w / Math.max(1, h); camera.updateProjectionMatrix(); fitRange(); }
+function resize() { renderer.setSize(canvas.clientWidth, canvas.clientHeight, false); measureFree(); applyViewOffset(); fitRange(); }
 new ResizeObserver(resize).observe(canvas); resize();
+// the header, the cards and the dock change size as they fill, show and hide: measure the free part again
+const uiWatch = new ResizeObserver(() => measureFree());
+[...document.querySelectorAll('.brand > .title, .brand > .tools'), $('dock'), panel, addPanel].forEach(el => uiWatch.observe(el));
 function showNotice(msg) { const n = $('notice'); n.textContent = msg; n.hidden = false; }
 
 /* ---------- keep it smooth: lower the sharpness when frames get slow ---------- */
@@ -814,11 +860,14 @@ function loop() {
     ranked.forEach((pl, i) => { pl.rank = i; pl.wantDetail = pl.k === focusPlot || (i < FULL_ROOMS && !pl.farOut); showLayer(pl); });
   }
   if (tween) {
+    if (!tween.measured) { tween.measured = true; measureFree(); }   // a card opened with this flight is in place now
     const k = Math.min(1, (performance.now() - tween.start) / tween.ms), e = ease(k);
-    camera.position.lerpVectors(tween.p0, tween.p1, e); controls.target.lerpVectors(tween.t0, tween.t1, e);
+    flyEnd.copy(tween.t1).addScaledVector(tween.dir, tween.dist());
+    camera.position.lerpVectors(tween.p0, flyEnd, e); controls.target.lerpVectors(tween.t0, tween.t1, e);
+    const [ox, oy] = offTarget(); setViewOff(tween.o0.x + (ox - tween.o0.x) * e, tween.o0.y + (oy - tween.o0.y) * e);
     if (k >= 1) { tween = null; controls.enabled = true; controls.maxDistance = zoomOutLimit(); }
   }
-  if (!tween) clampPan();
+  if (!tween) { clampPan(); stepViewOffset(dt); }
   controls.update();
   // shadows: every frame while things fly around, every 2nd frame inside a room, every 8th on the grid
   if (trans || tween || frame % (focusPlot ? 2 : 8) === 0) renderer.shadowMap.needsUpdate = true;
