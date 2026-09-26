@@ -659,7 +659,7 @@ export function createHomeRoom(root, fontsReady) {
     const rugT = canvasTex(RW, RH);
     const pathPts = (pts) => { const out = []; for (let i = 0; i < pts.length; i++) { const [a, b] = pts[i], [c, d] = pts[(i + 1) % pts.length]; const L = Math.hypot(c - a, d - b); for (let s = 0; s < L; s += 26) out.push([a + (c - a) * s / L, b + (d - b) * s / L, Math.atan2(d - b, c - a)]); } return out; };
     const walkers = [
-      { name: 'Racer', pts: pathPts([[200, 250], [520, 170], [820, 260], [820, 540], [520, 590], [180, 520]]), i: 0 },
+      { name: 'Enhe', pts: pathPts([[200, 250], [520, 170], [820, 260], [820, 540], [520, 590], [180, 520]]), i: 0 },
       { name: 'Kexin', pts: pathPts([[540, 560], [800, 500], [560, 200], [260, 200], [200, 600]]), i: 20 }
     ];
     function drawRug() {

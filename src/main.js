@@ -198,7 +198,7 @@ function removePlace(k) {
 let fontsOk = false;
 
 /* ---------- state ---------- */
-let homeRm = null;
+let homeRm = null, homePl = null;   // Enhe's room: what createHomeRoom returns, and its place
 let focusPlot = null;      // null = the whole grid
 let activeHot = null;      // a thing in the home room
 let activeObj = null;      // { k, i } a thing in someone's room
@@ -450,9 +450,11 @@ const pending = new Map();      // square -> room code whose far version isn't m
 let cached = new Map();         // cache key -> baked data, read from the browser cache at start
 let revealed = false;           // the loading screen is gone
 let ranked = [];                // guest rooms, nearest the camera first (updated a few times a second)
-const FULL_ROOMS = 6;           // how many of the nearest rooms show full detail (a full room is ~170 draw calls, a far one ~7)
-const AHEAD = 4;                // rooms past those that get their detail built ahead of time, so moving around doesn't wait
-const KEEP = FULL_ROOMS + AHEAD + 4;   // past this rank, a room's detail is freed again
+// how many of the rooms nearest the camera show full detail (a full room is ~200 draw calls, a far one ~7; Enhe's
+// room ~310 against 2). Slow devices lower it, down to none (see "keep it smooth"); the room you're in always gets detail.
+let nearRooms = 6;
+const ahead = () => Math.min(4, nearRooms);   // rooms past those that get their detail built ahead of time, so moving around doesn't wait
+const keepDetail = () => nearRooms + ahead() + 4;   // past this rank, a room's detail is freed again
 const nextFrame = () => new Promise(r => requestAnimationFrame(() => r()));
 
 function buildDetail(pl) {
@@ -461,10 +463,10 @@ function buildDetail(pl) {
   pl.detail = { group, room: built.group, anims: built.anims, objGroups: built.objGroups, state: 'built' };
   refreshMats(pl);
 }
-// show the full room once it's ready and wanted, otherwise the far version
+// show the full room once it's ready and wanted, otherwise the far version (neither while the place is hidden, see the loop)
 function showLayer(pl) {
   const d = !!(pl.wantDetail && pl.detail?.state === 'ready');
-  pl.showingDetail = d; pl.far.visible = !d; if (pl.detail) pl.detail.group.visible = d;
+  pl.showingDetail = d; pl.far.visible = !d && !pl.hidden; if (pl.detail) pl.detail.group.visible = d && !pl.hidden;
   pl.objGroups = d ? pl.detail.objGroups : null; pl.anims = d ? pl.detail.anims : null;
 }
 function dropDetail(pl) { const g = pl.detail.group; pl.detail = null; showLayer(pl); disposeGroup(g); refreshMats(pl); }
@@ -543,12 +545,12 @@ function nextJob(calm) {
   if (pending.size) { const j = ok(farJob(nearestPending())); if (j) return j; }
   // 3. detail for the nearest rooms, then a few ahead
   for (const pl of ranked) {
-    if (pl.rank >= FULL_ROOMS + AHEAD) break;
+    if (pl.rank >= nearRooms + ahead()) break;
     if (pl.farOut || pl.detail?.state === 'ready' || places.get(pl.k) !== pl) continue;   // (a replaced room is skipped)
     const j = ok(detailJob(pl)); if (j) return j;
   }
   // 4. free the detail of rooms far down the list
-  for (const pl of ranked) if (pl.detail && pl.rank >= KEEP && !pl.wantDetail && places.get(pl.k) === pl) return { kind: 'detail-free', heavy: false, run: () => dropDetail(pl) };
+  for (const pl of ranked) if (pl.detail && pl.rank >= keepDetail() && !pl.wantDetail && places.get(pl.k) === pl) return { kind: 'detail-free', heavy: false, run: () => dropDetail(pl) };
   return null;
 }
 let lastMove = 0, jobFrame = 0;
@@ -782,14 +784,20 @@ const uiWatch = new ResizeObserver(() => measureFree());
 [...document.querySelectorAll('.brand > .title, .brand > .tools'), $('dock'), panel, addPanel].forEach(el => uiWatch.observe(el));
 function showNotice(msg) { const n = $('notice'); n.textContent = msg; n.hidden = false; }
 
-/* ---------- keep it smooth: lower the sharpness when frames get slow ---------- */
-// Each step draws fewer pixels. If a step is still too slow, it moves down again and never climbs back to a step that lagged.
-const STEPS = [DEVICE_PX, ...[1.5, 1.25, 1, 0.85, 0.7].filter(p => p < DEVICE_PX - 0.01)];
+/* ---------- keep it smooth: draw less when frames get slow ----------
+   The frame rate decides, not guesses about the device. Each step down draws fewer pixels or shows fewer rooms in
+   full detail (the rest show their baked version), until the whole grid is baked. If a step is still too slow, it moves
+   down again and never climbs back to a step that lagged. The step is remembered for the next visit. */
+// [sharpness, how many of the nearest rooms show full detail]
+const LADDER = [[2, 6], [1.5, 6], [1.5, 3], [1.25, 3], [1.25, 1], [1, 1], [1, 0], [0.85, 0], [0.7, 0]];
+const STEPS = LADDER.map(([px, near]) => [Math.min(px, DEVICE_PX), near]).filter((s, i, a) => !i || s[0] !== a[i - 1][0] || s[1] !== a[i - 1][1]);
 const tooSlow = new Set();
-let step = 0; try { step = Math.min(STEPS.length - 1, Math.max(0, Number(localStorage.getItem('cubby-quality')) || 0)); } catch {}
+// a first visit on a phone starts a few steps down, so its first seconds aren't choppy; a fast phone climbs back up
+let step = 0; try { const saved = localStorage.getItem('cubby-quality'); step = saved !== null ? Math.min(STEPS.length - 1, Math.max(0, Number(saved) || 0)) : touch ? STEPS.findIndex(([px, near]) => px <= 1.5 && near <= 3) : 0; } catch {}
 function applyStep() {
-  renderer.setPixelRatio(STEPS[step]);
-  const size = STEPS[step] >= 1.25 ? 2048 : 1024, shadowsOn = STEPS[step] >= 1 || STEPS.length === 1;
+  const [px, near] = STEPS[step];
+  renderer.setPixelRatio(px); nearRooms = near;
+  const size = px >= 1.25 ? 2048 : 1024, shadowsOn = px >= Math.min(1, DEVICE_PX);
   if (key.castShadow !== shadowsOn) key.castShadow = shadowsOn;
   if (key.shadow.mapSize.x !== size) { key.shadow.mapSize.set(size, size); if (key.shadow.map) { key.shadow.map.dispose(); key.shadow.map = null; } }
   resize(); renderer.shadowMap.needsUpdate = true;
@@ -798,11 +806,13 @@ function applyStep() {
 let spWin = 0, spFrames = 0, spLast = 0, spGood = 0, spStart = Infinity;   // starts after the reveal, so loading never counts
 function trackSpeed(now) {
   const gap = now - spLast; spLast = now;
-  if (now < spStart || document.hidden || gap > 250) return;   // skip start-up and tab switches
+  if (now < spStart || document.hidden || gap > 400) return;   // skip start-up and tab switches
   spWin += gap; spFrames++;
-  if (spWin < 2000) return;
-  const avg = spWin / spFrames; spWin = 0; spFrames = 0;
-  if (avg > 25 && step < STEPS.length - 1) { tooSlow.add(step); step++; spGood = 0; applyStep(); spStart = now + 1500; }  // under ~40 fps
+  const avg = spWin / spFrames;
+  // judged every 2 s, or after 1 s when it's very slow (under 25 fps), which also steps down two at once
+  if (spWin < 2000 && !(spWin >= 1000 && avg > 40)) return;
+  spWin = 0; spFrames = 0;
+  if (avg > 25 && step < STEPS.length - 1) { tooSlow.add(step); step = Math.min(STEPS.length - 1, step + (avg > 40 ? 2 : 1)); spGood = 0; applyStep(); spStart = now + 1500; }  // under ~40 fps
   else if (avg < 18.5) { if (++spGood >= 4 && step > 0 && !tooSlow.has(step - 1)) { step--; spGood = 0; applyStep(); spStart = now + 1500; } }
   else spGood = 0;
 }
@@ -833,7 +843,11 @@ function loop() {
     const hb = hitByKey.get(k); if (hb) hb.position.y = 3.4 + pl.lift;
     if (Math.abs(pl.dim - dimT) < 0.005) pl.dim = dimT;
     if (Math.abs(pl.dim - pl.dimShown) > 0.01 || (pl.dim === dimT && pl.dimShown !== dimT)) applyDim(pl);
-    pl.root.visible = pl.dim < 0.995 && !pl.farOut;   // other rooms go once they've faded all the way to black
+    // other rooms go once they've faded all the way to black. Enhe's room hides its versions but keeps its lamps in
+    // the scene: taking lights out makes every material rebuild its shader, a stall just as you land in a room
+    const gone = pl.dim >= 0.995 || pl.farOut;
+    if (pl.kind !== 'home') pl.root.visible = !gone;
+    else if (pl.hidden !== gone) { pl.hidden = gone; showLayer(pl); }
   });
   const gT = kSel ? 1 : 0, uD = groundMat.uniforms.uDim;
   if (trans) uD.value = trans.g + (gT - trans.g) * te; else uD.value += (gT - uD.value) * Math.min(1, dt * 3);
@@ -846,22 +860,24 @@ function loop() {
     elapsed += dt;
     groundMat.uniforms.uTime.value = elapsed;
     stepRain(dt);
-    if (camera.position.distanceTo(posOf(HOME)) < 75) { homeRm.animators.forEach(f => f(dt, elapsed)); tvAcc += dt; if (tvAcc > 1 / 24) { tvAcc = 0; homeRm.drawTV(elapsed); } }
+    if (homePl.showingDetail && camera.position.distanceTo(posOf(HOME)) < 75) { homeRm.animators.forEach(f => f(dt, elapsed)); tvAcc += dt; if (tvAcc > 1 / 24) { tvAcc = 0; homeRm.drawTV(elapsed); } }
     places.forEach(pl => { if (pl.anims && pl.showingDetail && pl.root.visible) pl.anims.forEach(f => f(dt, elapsed)); });
   }
   const nowMs = performance.now();
   // level of detail: the few rooms nearest the camera (and the one you're in) show full detail once it's ready;
-  // the rest show their far version. Rooms lost in the fog are not drawn at all.
+  // the rest show their far version. Rooms lost in the fog are not drawn at all. During a flight a room only ever
+  // gains detail, so the room you're leaving doesn't turn baked while it still fills the screen.
   if (nowMs - lastLod > 300) {
     lastLod = nowMs; const fogOut = scene.fog.far + 20;
-    ranked = [];
+    const all = [];
     places.forEach((pl, k) => {
       pl.camD = camera.position.distanceTo(pl.root.position);
       pl.farOut = k !== focusPlot && pl.camD > fogOut;
-      if (pl.kind === 'guest') ranked.push(pl);
+      all.push(pl);
     });
-    ranked.sort((a, b) => a.camD - b.camD);
-    ranked.forEach((pl, i) => { pl.rank = i; pl.wantDetail = pl.k === focusPlot || (i < FULL_ROOMS && !pl.farOut); showLayer(pl); });
+    all.sort((a, b) => a.camD - b.camD);
+    all.forEach((pl, i) => { pl.rank = i; pl.wantDetail = pl.k === focusPlot || (i < nearRooms && !pl.farOut) || !!(tween && pl.showingDetail); showLayer(pl); });
+    ranked = all.filter(pl => pl.kind === 'guest');   // (Enhe's room is always built, so the jobs skip it)
   }
   if (tween) {
     if (!tween.measured) { tween.measured = true; measureFree(); }   // a card opened with this flight is in place now
@@ -895,7 +911,7 @@ function reveal() {
   revealed = true;
   $('loading').classList.add('gone');
   goOverview();                          // the fly-in
-  spStart = performance.now() + 4000;    // judge the frame rate only once things have settled
+  spStart = performance.now() + 2500;    // judge the frame rate once the fly-in is over
   showBgLoad();
   loop();
 }
@@ -903,8 +919,12 @@ function reveal() {
 setLoad('Building the grid…', 0.04);
 fontsOk = await withTimeout(Promise.all([document.fonts.load('700 64px "Chakra Petch"'), document.fonts.load('600 40px Caveat')]).then(() => true).catch(() => false), 3000);
 setGridR(MIN_R);
-homeRm = createHomeRoom(homeRoot, fontsOk);
-addPlace(HOME, 'home', homeRoot, { room: null });
+// Enhe's room is built in full up front (you can click its things straight away) and also gets a baked version, for
+// when it's far off or the device is slow. Its lamps move up onto the room itself, so they light whichever version shows.
+const homeDetail = new THREE.Group(); homeRoot.add(homeDetail);
+homeRm = createHomeRoom(homeDetail, fontsOk);
+homeDetail.children.filter(o => o.isLight).forEach(l => homeRoot.add(l));
+homePl = addPlace(HOME, 'home', homeRoot, { room: null, detail: { group: homeDetail, state: 'ready' } });
 try { const saved = sessionStorage.getItem('rg-code'); if (saved) $('codeInput').value = saved; } catch {}
 camera.position.set(170, 190, 170); controls.target.set(0, 0, 0); controls.update();
 renderChrome(); setControlMode(true);
@@ -918,6 +938,14 @@ const roomsP = (async () => {
   cached = await roomCache.readMany(list.map(r => roomCache.cacheKey(r.owner, sigOf(r))));
   return list;
 })().catch(e => { console.warn(e); showNotice(`Could not load rooms right now. Showing ${HOME_NAME} only.`); return null; });
+
+// while the rooms load: Enhe's room's baked version, from the browser cache or baked now (about 50 ms)
+const HOME_KEY = roomCache.cacheKey('home', typeof __HOME_BUILD__ !== 'undefined' ? __HOME_BUILD__ : 'dev');
+{
+  let data = (await withTimeout(roomCache.readMany([HOME_KEY]), 1500) || new Map()).get(HOME_KEY);
+  if (!data) { data = bakeRoom(homeDetail); roomCache.write(HOME_KEY, data); }
+  homePl.far = farLayer(data, { title: HOME_NAME }, fontsOk); homeRoot.add(homePl.far); refreshMats(homePl);
+}
 
 const early = await withTimeout(roomsP, 8000);
 if (early) {
@@ -944,7 +972,7 @@ if (list && !early) applyRooms(list);
 if (backend) {
   backend.subscribe(l => applyRooms(l));
   backend.onAuth(async () => { try { applyRooms(await backend.listRooms()); } catch {} if (!addPanel.hidden) renderAddState(); });
-  roomCache.keepOnly(rooms.map(r => roomCache.cacheKey(r.owner, sigOf(r))));   // forget rooms that changed or left
+  roomCache.keepOnly([HOME_KEY, ...rooms.map(r => roomCache.cacheKey(r.owner, sigOf(r)))]);   // forget rooms that changed or left
   // back from Google sign-in: reopen the add panel and finish adding the room
   let resume = null; try { resume = sessionStorage.getItem('rg-resume'); sessionStorage.removeItem('rg-resume'); } catch {}
   if (resume && backend.me && $('codeInput').value.trim()) {
