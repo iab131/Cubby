@@ -35,6 +35,10 @@ STEP 4. Build each object from simple shapes, like digital LEGO.
   - A ring stands up facing you, like a wheel seen from the side. rot [0,90,0] turns it sideways. rot [90,0,0] lays it flat.
   - A cone points up. rot [180,0,0] points it down.
 - Optional on a part: "glow": true (lights up) and "shiny": true (metal, glass or plastic).
+- Motion (optional) makes the room feel alive:
+  - On an object: "motion": one of breathe (slow breathing, great for pets and plushies), hop (little hops), bob (floats up and down), sway (rocks side to side), spin (turns slowly, like a turntable).
+  - On a part: "move": one of spin (wheels, fans, records), wag (tails, flags, antennas), bob (something floating, like a balloon or a bubble).
+  - Use motion on 1 to 3 objects and a few parts, so the room stays calm.
 - Real-life sizes, so things look right together: table or desk top 1.5 high, chair seat 0.9, laptop 0.7 wide, monitor 1.1 x 0.7, bookshelf 3 tall, person 3.4 tall, door 4 tall.
 - Make each object recognizable and rich:
   - Hero object: 25 to 45 parts. Other objects: 10 to 30 parts.

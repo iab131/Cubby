@@ -8,6 +8,8 @@ import { cleanDecor, defaultDecor, buildDecor, applyMood } from './decor.js';
 export const LIMITS = { objects: 10, partsPerObject: 60, partsTotal: 400, links: 3 };
 const SHAPES = ['box', 'ball', 'cylinder', 'cone', 'ring', 'sign'];
 const TYPES = ['project', 'interest', 'about'];
+const MOTIONS = ['bob', 'breathe', 'hop', 'sway', 'spin'];   // a whole object moving
+const MOVES = ['spin', 'wag', 'bob'];                          // one part moving
 const txt = (s, n) => String(s ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
 const num = (v, lo, hi, d = 0) => { const x = Number(v); return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : d; };
 const hex = (v, d) => /^#[0-9a-fA-F]{6}$/.test(String(v || '')) ? String(v) : d;
@@ -47,6 +49,7 @@ export function cleanRecipe(r) {
     if (o.at !== undefined) obj.at = vec(o.at, 2, -4.6, 4.6, [0, 0]);
     obj.turn = num(o.turn, -360, 360, 0);
     if (KIT_IDS.includes(o.kit)) obj.kit = o.kit;
+    if (MOTIONS.includes(o.motion)) obj.motion = o.motion;
     const parts = [];
     for (const p of (Array.isArray(o.parts) ? o.parts : []).slice(0, LIMITS.partsPerObject)) {
       if (!p || !SHAPES.includes(p.shape) || total >= LIMITS.partsTotal) continue;
@@ -55,6 +58,7 @@ export function cleanRecipe(r) {
       if (p.glow) part.glow = true;
       if (p.shiny) part.shiny = true;
       if (p.shape === 'sign') part.text = txt(p.text, 28);
+      if (MOVES.includes(p.move)) part.move = p.move;
       parts.push(part); total++;
     }
     if (!obj.kit && !parts.length) continue;
@@ -80,8 +84,8 @@ function unitGeo(shape) {
   }
   return UNIT[shape];
 }
-function buildParts(g, parts, fontFamily) {
-  for (const p of parts) {
+function buildParts(g, parts, fontFamily, anims, seed = 0) {
+  parts.forEach(p => {
     let mesh;
     if (p.shape === 'sign') {
       const t = canvasTex(512, 128, (x, w, h) => {
@@ -101,7 +105,25 @@ function buildParts(g, parts, fontFamily) {
     mesh.position.set(p.pos[0], p.pos[1], p.pos[2]);
     mesh.rotation.set(THREE.MathUtils.degToRad(p.rot[0]), THREE.MathUtils.degToRad(p.rot[1]), THREE.MathUtils.degToRad(p.rot[2]));
     g.add(mesh);
-  }
+    if (p.move && anims) partMotion(mesh, p, anims, seed);   // one phase per object, so its moving parts keep time together
+  });
+}
+
+/* Motion: parts and whole objects can move a little ("move" on a part, "motion" on an object). */
+const UP = new THREE.Vector3(0, 1, 0), turnQ = new THREE.Quaternion();
+function partMotion(mesh, p, anims, seed) {
+  const ph = (seed % 97) * 0.37, y0 = mesh.position.y, q0 = mesh.quaternion.clone();
+  if (p.move === 'spin') { const wheel = p.shape === 'ring'; anims.push(dt => { if (wheel) mesh.rotateZ(dt * 2.5); else mesh.rotateY(dt * 2.5); }); }
+  else if (p.move === 'wag') anims.push((dt, t) => { mesh.quaternion.copy(q0).premultiply(turnQ.setFromAxisAngle(UP, Math.sin(t * 7 + ph) * 0.45)); });
+  else if (p.move === 'bob') anims.push((dt, t) => { mesh.position.y = y0 + Math.sin(t * 2 + ph) * 0.07; });
+}
+function objectMotion(mg, motion, anims, seed) {
+  const ph = (seed % 89) * 0.41;
+  if (motion === 'bob') anims.push((dt, t) => { mg.position.y = 0.1 + Math.sin(t * 1.6 + ph) * 0.1; });
+  else if (motion === 'breathe') anims.push((dt, t) => { const s = Math.sin(t * 2 + ph); mg.scale.set(1 + s * 0.02, 1 + s * 0.045, 1 + s * 0.02); });
+  else if (motion === 'hop') anims.push((dt, t) => { const k = ((t + ph) % 1.8) / 0.45; const up = k < 1 ? Math.sin(Math.PI * k) : 0; mg.position.y = up * 0.35; mg.scale.set(1, 1 + up * 0.06, 1); });
+  else if (motion === 'sway') anims.push((dt, t) => { mg.rotation.z = Math.sin(t * 1.5 + ph) * 0.07; });
+  else if (motion === 'spin') anims.push(dt => { mg.rotation.y += dt * 0.6; });
 }
 
 /* A visitor's room: shell tinted with their colour, then their objects. */
@@ -138,8 +160,10 @@ export function buildRecipeRoom(parent, room, fontsReady) {
     if (o.at) { [x, z] = o.at; ry = THREE.MathUtils.degToRad(o.turn || 0); }
     else { const s = SLOTS[slot++ % SLOTS.length]; [x, z, ry] = s; if (o.turn) ry += THREE.MathUtils.degToRad(o.turn); }
     og.position.set(x, 0, z); og.rotation.y = ry;
-    if (o.kit && B[o.kit]) { const kg = new THREE.Group(); kg.scale.setScalar(1.3); og.add(kg); B[o.kit](kg, c, seed + i, anims); } // kits keep their size even with extra parts
-    if (o.parts) buildParts(og, o.parts, FONT);
+    const mg = new THREE.Group(); og.add(mg);   // what moves when the object has a "motion"
+    if (o.kit && B[o.kit]) { const kg = new THREE.Group(); kg.scale.setScalar(1.3); mg.add(kg); B[o.kit](kg, c, seed + i, anims); } // kits keep their size even with extra parts
+    if (o.parts) buildParts(mg, o.parts, FONT, anims, seed + i * 61);
+    if (o.motion) objectMotion(mg, o.motion, anims, seed + i);
   });
   g.traverse(o => { if (o.isMesh) { o.castShadow = !(o.material && o.material.isMeshBasicMaterial); o.receiveShadow = true; } });
   floor.castShadow = false; rug.castShadow = false;
@@ -184,6 +208,10 @@ STEP 4. Build each object from simple shapes, like digital LEGO.
   - A ring stands up facing you, like a wheel seen from the side. rot [0,90,0] turns it sideways. rot [90,0,0] lays it flat.
   - A cone points up. rot [180,0,0] points it down.
 - Optional on a part: "glow": true (lights up) and "shiny": true (metal, glass or plastic).
+- Motion (optional) makes the room feel alive:
+  - On an object: "motion": one of breathe (slow breathing, great for pets and plushies), hop (little hops), bob (floats up and down), sway (rocks side to side), spin (turns slowly, like a turntable).
+  - On a part: "move": one of spin (wheels, fans, records), wag (tails, flags, antennas), bob (something floating, like a balloon or a bubble).
+  - Use motion on 1 to 3 objects and a few parts, so the room stays calm.
 - Real-life sizes, so things look right together: table or desk top 1.5 high, chair seat 0.9, laptop 0.7 wide, monitor 1.1 x 0.7, bookshelf 3 tall, person 3.4 tall, door 4 tall.
 - Make each object recognizable and rich:
   - Hero object: 25 to 45 parts. Other objects: 10 to 30 parts.
