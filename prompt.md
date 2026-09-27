@@ -80,6 +80,7 @@ STEP 6. Keep it safe and public.
 STEP 7. Check your work before you reply.
 - Every object is at a floor plan spot, at least 2.5 apart, and the front-right corner is clear.
 - The hero object has the most detail, and every object is easy to recognize.
+- Pets, plushies and other living things have a "motion" (breathe or hop is best). Wheels, fans and tails have a "move" where it fits.
 - "decor" has a window, 3 to 4 pictures, a mood and 2 to 4 lamps. No lamp sits on an object.
 - Limits: at most 10 objects, 60 parts per object, 400 parts total, 5 pictures, 5 lamps. Title up to 40 characters, bio up to 200.
 - "color" is one of: #E8402F, #FF8A4C, #F2C14E, #3DDC84, #2CC4B3, #3FA7FF, #9B6BFF, #FF4FA3.
@@ -104,10 +105,10 @@ STEP 8. Reply with the room code: one JSON code block in exactly this shape.
       "parts": [
         { "shape": "box", "size": [1.2, 0.3, 2.2], "pos": [0, 0.45, 0], "rot": [0, 0, 0], "color": "#3FA7FF" },
         { "shape": "box", "size": [1.3, 0.05, 1.4], "pos": [0, 0.65, 0], "rot": [0, 0, 0], "color": "#1B2A4A", "shiny": true },
-        { "shape": "ring", "size": [0.5, 0.5, 0.2], "pos": [0.65, 0.25, 0.7], "rot": [0, 90, 0], "color": "#222222" },
-        { "shape": "ring", "size": [0.5, 0.5, 0.2], "pos": [-0.65, 0.25, 0.7], "rot": [0, 90, 0], "color": "#222222" },
-        { "shape": "ring", "size": [0.5, 0.5, 0.2], "pos": [0.65, 0.25, -0.7], "rot": [0, 90, 0], "color": "#222222" },
-        { "shape": "ring", "size": [0.5, 0.5, 0.2], "pos": [-0.65, 0.25, -0.7], "rot": [0, 90, 0], "color": "#222222" },
+        { "shape": "ring", "size": [0.5, 0.5, 0.2], "pos": [0.65, 0.25, 0.7], "rot": [0, 90, 0], "color": "#222222", "move": "spin" },
+        { "shape": "ring", "size": [0.5, 0.5, 0.2], "pos": [-0.65, 0.25, 0.7], "rot": [0, 90, 0], "color": "#222222", "move": "spin" },
+        { "shape": "ring", "size": [0.5, 0.5, 0.2], "pos": [0.65, 0.25, -0.7], "rot": [0, 90, 0], "color": "#222222", "move": "spin" },
+        { "shape": "ring", "size": [0.5, 0.5, 0.2], "pos": [-0.65, 0.25, -0.7], "rot": [0, 90, 0], "color": "#222222", "move": "spin" },
         { "shape": "box", "size": [0.3, 0.06, 0.06], "pos": [0, 0.5, 1.12], "rot": [0, 0, 0], "color": "#F2C14E", "glow": true },
         { "shape": "sign", "text": "SUN-1", "size": [0.8, 0.2, 0.01], "pos": [0, 1.1, 0], "rot": [0, 0, 0], "color": "#F2C14E" }
       ]
