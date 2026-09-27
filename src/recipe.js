@@ -10,6 +10,21 @@ const SHAPES = ['box', 'ball', 'cylinder', 'cone', 'ring', 'sign'];
 const TYPES = ['project', 'interest', 'about'];
 const MOTIONS = ['bob', 'breathe', 'hop', 'sway', 'spin'];   // a whole object moving
 const MOVES = ['spin', 'wag', 'bob'];                          // one part moving
+// custom motion: keyframes for a whole object ("anim") or for a group of its parts ("rigs"), plain numbers only
+const ANIM = { rigs: 8, keys: 16, loop: [0.3, 30] };
+const GROUP_NAME = /^[a-z0-9_-]{1,16}$/i;
+function cleanAnim(a) {
+  if (!a || typeof a !== 'object' || !Array.isArray(a.keys)) return null;
+  const loop = num(a.loop, ANIM.loop[0], ANIM.loop[1], 3);
+  const keys = a.keys.slice(0, ANIM.keys).filter(k => k && typeof k === 'object').map(k => ({
+    t: num(k.t, 0, loop, 0), pos: vec(k.pos, 3, -6, 6, [0, 0, 0]), rot: vec(k.rot, 3, -1080, 1080, [0, 0, 0]), scale: num(k.scale, 0.1, 3, 1)
+  })).sort((x, y) => x.t - y.t);
+  if (keys.length < 2) return null;
+  const out = { loop, keys };
+  if (a.ease === 'linear') out.ease = 'linear';
+  const off = num(a.offset, 0, 30, 0); if (off) out.offset = off;
+  return out;
+}
 const txt = (s, n) => String(s ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
 const num = (v, lo, hi, d = 0) => { const x = Number(v); return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : d; };
 const hex = (v, d) => /^#[0-9a-fA-F]{6}$/.test(String(v || '')) ? String(v) : d;
@@ -50,6 +65,16 @@ export function cleanRecipe(r) {
     obj.turn = num(o.turn, -360, 360, 0);
     if (KIT_IDS.includes(o.kit)) obj.kit = o.kit;
     if (MOTIONS.includes(o.motion)) obj.motion = o.motion;
+    const anim = cleanAnim(o.anim); if (anim) obj.anim = anim;
+    const rigs = []; const named = new Set();
+    for (const r of (Array.isArray(o.rigs) ? o.rigs : []).slice(0, ANIM.rigs)) {
+      if (!r || !GROUP_NAME.test(String(r.group || '')) || named.has(r.group)) continue;
+      const a = cleanAnim(r); if (!a) continue;
+      const rig = { group: r.group, pivot: vec(r.pivot, 3, -4, 7, [0, 0, 0]), ...a };
+      if (GROUP_NAME.test(String(r.parent || '')) && r.parent !== r.group) rig.parent = r.parent;
+      named.add(r.group); rigs.push(rig);
+    }
+    if (rigs.length) obj.rigs = rigs;
     const parts = [];
     for (const p of (Array.isArray(o.parts) ? o.parts : []).slice(0, LIMITS.partsPerObject)) {
       if (!p || !SHAPES.includes(p.shape) || total >= LIMITS.partsTotal) continue;
@@ -59,6 +84,7 @@ export function cleanRecipe(r) {
       if (p.shiny) part.shiny = true;
       if (p.shape === 'sign') part.text = txt(p.text, 28);
       if (MOVES.includes(p.move)) part.move = p.move;
+      if (GROUP_NAME.test(String(p.group || ''))) part.group = p.group;
       parts.push(part); total++;
     }
     if (!obj.kit && !parts.length) continue;
@@ -84,8 +110,9 @@ function unitGeo(shape) {
   }
   return UNIT[shape];
 }
-function buildParts(g, parts, fontFamily, anims, seed = 0) {
+function buildParts(g, parts, fontFamily, anims, seed = 0, rigs = null) {
   parts.forEach(p => {
+    const rig = rigs && p.group ? rigs.get(p.group) : null;
     let mesh;
     if (p.shape === 'sign') {
       const t = canvasTex(512, 128, (x, w, h) => {
@@ -104,7 +131,8 @@ function buildParts(g, parts, fontFamily, anims, seed = 0) {
     }
     mesh.position.set(p.pos[0], p.pos[1], p.pos[2]);
     mesh.rotation.set(THREE.MathUtils.degToRad(p.rot[0]), THREE.MathUtils.degToRad(p.rot[1]), THREE.MathUtils.degToRad(p.rot[2]));
-    g.add(mesh);
+    if (rig) { mesh.position.sub(rig.userData.at); rig.add(mesh); }   // parts are written in object space; a rig holds them around its pivot
+    else g.add(mesh);
     if (p.move && anims) partMotion(mesh, p, anims, seed);   // one phase per object, so its moving parts keep time together
   });
 }
@@ -116,6 +144,53 @@ function partMotion(mesh, p, anims, seed) {
   if (p.move === 'spin') { const wheel = p.shape === 'ring'; anims.push(dt => { if (wheel) mesh.rotateZ(dt * 2.5); else mesh.rotateY(dt * 2.5); }); }
   else if (p.move === 'wag') anims.push((dt, t) => { mesh.quaternion.copy(q0).premultiply(turnQ.setFromAxisAngle(UP, Math.sin(t * 7 + ph) * 0.45)); });
   else if (p.move === 'bob') anims.push((dt, t) => { mesh.position.y = y0 + Math.sin(t * 2 + ph) * 0.07; });
+}
+/* Custom motion: play keyframes on a group. Keys hold offsets from where the group rests (pos), turns in degrees
+   (rot) and size (scale), at a time in seconds (t). The loop wraps back to the first key. */
+const D2R = Math.PI / 180;
+function sampleAnim(a, time, out) {
+  const L = a.loop, k = a.keys, T = (((time + (a.offset || 0)) % L) + L) % L;
+  let A, B, span, into;
+  if (T < k[0].t) { A = k[k.length - 1]; B = k[0]; span = L - A.t + B.t; into = L - A.t + T; }
+  else {
+    let i = 0; while (i + 1 < k.length && k[i + 1].t <= T) i++;
+    A = k[i];
+    if (i + 1 < k.length) { B = k[i + 1]; span = B.t - A.t; } else { B = k[0]; span = L - A.t + B.t; }
+    into = T - A.t;
+  }
+  let f = span > 1e-6 ? Math.min(1, into / span) : 1;
+  if (a.ease !== 'linear') f = f * f * (3 - 2 * f);
+  for (let j = 0; j < 3; j++) { out.pos[j] = A.pos[j] + (B.pos[j] - A.pos[j]) * f; out.rot[j] = A.rot[j] + (B.rot[j] - A.rot[j]) * f; }
+  out.scale = A.scale + (B.scale - A.scale) * f;
+  return out;
+}
+function playAnim(group, a, rest, anims) {
+  const st = { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1 };
+  const apply = t => {
+    sampleAnim(a, t, st);
+    group.position.set(rest.x + st.pos[0], rest.y + st.pos[1], rest.z + st.pos[2]);
+    group.rotation.set(st.rot[0] * D2R, st.rot[1] * D2R, st.rot[2] * D2R);
+    group.scale.setScalar(st.scale);
+  };
+  apply(0);   // start (and bake the far version) in the first key's pose
+  anims.push((dt, t) => apply(t));
+}
+// rigs: one group per named set of parts, turning around its pivot, optionally riding on a parent rig (an elbow on a shoulder)
+function buildRigs(mg, rigs) {
+  const map = new Map();
+  const make = (r, depth) => {
+    if (map.has(r.group)) return map.get(r.group);
+    const parentRig = r.parent && depth < 8 ? rigs.find(x => x.group === r.parent) : null;
+    const parent = parentRig ? make(parentRig, depth + 1) : mg;
+    const g = new THREE.Group();
+    g.userData.at = new THREE.Vector3(...r.pivot);
+    g.userData.rest = g.userData.at.clone().sub(parent === mg ? new THREE.Vector3() : parent.userData.at);
+    g.position.copy(g.userData.rest); g.userData.rig = r;
+    parent.add(g); map.set(r.group, g);
+    return g;
+  };
+  rigs.forEach(r => make(r, 0));
+  return map;
 }
 function objectMotion(mg, motion, anims, seed) {
   const ph = (seed % 89) * 0.41;
@@ -162,8 +237,11 @@ export function buildRecipeRoom(parent, room, fontsReady) {
     og.position.set(x, 0, z); og.rotation.y = ry;
     const mg = new THREE.Group(); og.add(mg);   // what moves when the object has a "motion"
     if (o.kit && B[o.kit]) { const kg = new THREE.Group(); kg.scale.setScalar(1.3); mg.add(kg); B[o.kit](kg, c, seed + i, anims); } // kits keep their size even with extra parts
-    if (o.parts) buildParts(mg, o.parts, FONT, anims, seed + i * 61);
-    if (o.motion) objectMotion(mg, o.motion, anims, seed + i);
+    const rigs = o.rigs ? buildRigs(mg, o.rigs) : null;
+    if (o.parts) buildParts(mg, o.parts, FONT, anims, seed + i * 61, rigs);
+    if (rigs) rigs.forEach(g => playAnim(g, g.userData.rig, g.userData.rest, anims));
+    if (o.anim) playAnim(mg, o.anim, new THREE.Vector3(), anims);
+    else if (o.motion) objectMotion(mg, o.motion, anims, seed + i);
   });
   g.traverse(o => { if (o.isMesh) { o.castShadow = !(o.material && o.material.isMeshBasicMaterial); o.receiveShadow = true; } });
   floor.castShadow = false; rug.castShadow = false;
@@ -212,6 +290,22 @@ STEP 4. Build each object from simple shapes, like digital LEGO.
   - On an object: "motion": one of breathe (slow breathing, great for pets and plushies), hop (little hops), bob (floats up and down), sway (rocks side to side), spin (turns slowly, like a turntable).
   - On a part: "move": one of spin (wheels, fans, records), wag (tails, flags, antennas), bob (something floating, like a balloon or a bubble).
   - Use motion on 1 to 3 objects and a few parts, so the room stays calm.
+- Custom motion, for the cool stuff (a robot climbing a wall, a car driving laps, a fan spinning, a hand waving):
+  - Give parts a "group" name (letters, numbers, - or _). Then add "rigs" to the object, one per group: { "group", "pivot", "loop", "keys" }, plus "ease", "offset" and "parent" if you need them.
+    - "pivot": [x, y, z], the joint the group turns around, like a shoulder or the middle of a fan. Same space as the parts' "pos". Write the parts' "pos" as usual.
+    - "loop": how long one round takes, in seconds (0.3 to 30). It repeats forever.
+    - "keys": 2 to 16 poses. Each is { "t": seconds, "pos": [x, y, z] moved from where it rests, "rot": [x, y, z] turn in degrees, "scale": size }. Leave out what doesn't change. After the last key it goes back to the first, so end where you started.
+    - To pause, repeat the same pose at two times, like { "t": 3.5, "pos": [0, 2.5, 0] } and { "t": 4.3, "pos": [0, 2.5, 0] }.
+    - "ease": "smooth" (the default, speeds up and slows down) or "linear" (steady speed, for spinning from rot 0 to 360).
+    - "offset": seconds to shift the timing, so a left and a right leg take turns.
+    - "parent": another group this one rides on, like arms on a climbing body.
+  - To move a whole object, give the object "anim": { "loop", "keys", "ease" } with the same kind of keys.
+  - Example: a robot that climbs a wall and jumps down while its arms swing. Its body parts have "group": "bot", its arm parts have "group": "arms", and the object has:
+    "rigs": [
+      { "group": "bot", "pivot": [0, 0.9, 0.3], "loop": 6, "keys": [{ "t": 0, "pos": [0, 0, 0] }, { "t": 3.5, "pos": [0, 2.5, 0] }, { "t": 4.3, "pos": [0, 2.5, 0] }, { "t": 4.9, "pos": [0, 0, 0] }] },
+      { "group": "arms", "parent": "bot", "pivot": [0, 1.4, 0.35], "loop": 0.8, "keys": [{ "t": 0, "rot": [0, 0, -25] }, { "t": 0.4, "rot": [0, 0, 25] }, { "t": 0.8, "rot": [0, 0, -25] }] }
+    ]
+  - Give custom motion to the 1 or 2 coolest objects. Keep moving things inside the room and clear of other objects.
 - Real-life sizes, so things look right together: table or desk top 1.5 high, chair seat 0.9, laptop 0.7 wide, monitor 1.1 x 0.7, bookshelf 3 tall, person 3.4 tall, door 4 tall.
 - Make each object recognizable and rich:
   - Hero object: 25 to 45 parts. Other objects: 10 to 30 parts.
@@ -255,7 +349,7 @@ STEP 7. Check your work before you reply.
 - The hero object has the most detail, and every object is easy to recognize.
 - Pets, plushies and other living things have a "motion" (breathe or hop is best). Wheels, fans and tails have a "move" where it fits.
 - "decor" has a window, 3 to 4 pictures, a mood and 2 to 4 lamps. No lamp sits on an object.
-- Limits: at most 10 objects, 60 parts per object, 400 parts total, 5 pictures, 5 lamps. Title up to 40 characters, bio up to 200.
+- Limits: at most 10 objects, 60 parts per object, 400 parts total, 8 rigs per object, 16 keys per rig or anim, 5 pictures, 5 lamps. Title up to 40 characters, bio up to 200.
 - "color" is one of: #E8402F, #FF8A4C, #F2C14E, #3DDC84, #2CC4B3, #3FA7FF, #9B6BFF, #FF4FA3.
 - The code is valid JSON: no comments, no trailing commas, no null values.
 

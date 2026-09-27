@@ -39,6 +39,22 @@ STEP 4. Build each object from simple shapes, like digital LEGO.
   - On an object: "motion": one of breathe (slow breathing, great for pets and plushies), hop (little hops), bob (floats up and down), sway (rocks side to side), spin (turns slowly, like a turntable).
   - On a part: "move": one of spin (wheels, fans, records), wag (tails, flags, antennas), bob (something floating, like a balloon or a bubble).
   - Use motion on 1 to 3 objects and a few parts, so the room stays calm.
+- Custom motion, for the cool stuff (a robot climbing a wall, a car driving laps, a fan spinning, a hand waving):
+  - Give parts a "group" name (letters, numbers, - or _). Then add "rigs" to the object, one per group: { "group", "pivot", "loop", "keys" }, plus "ease", "offset" and "parent" if you need them.
+    - "pivot": [x, y, z], the joint the group turns around, like a shoulder or the middle of a fan. Same space as the parts' "pos". Write the parts' "pos" as usual.
+    - "loop": how long one round takes, in seconds (0.3 to 30). It repeats forever.
+    - "keys": 2 to 16 poses. Each is { "t": seconds, "pos": [x, y, z] moved from where it rests, "rot": [x, y, z] turn in degrees, "scale": size }. Leave out what doesn't change. After the last key it goes back to the first, so end where you started.
+    - To pause, repeat the same pose at two times, like { "t": 3.5, "pos": [0, 2.5, 0] } and { "t": 4.3, "pos": [0, 2.5, 0] }.
+    - "ease": "smooth" (the default, speeds up and slows down) or "linear" (steady speed, for spinning from rot 0 to 360).
+    - "offset": seconds to shift the timing, so a left and a right leg take turns.
+    - "parent": another group this one rides on, like arms on a climbing body.
+  - To move a whole object, give the object "anim": { "loop", "keys", "ease" } with the same kind of keys.
+  - Example: a robot that climbs a wall and jumps down while its arms swing. Its body parts have "group": "bot", its arm parts have "group": "arms", and the object has:
+    "rigs": [
+      { "group": "bot", "pivot": [0, 0.9, 0.3], "loop": 6, "keys": [{ "t": 0, "pos": [0, 0, 0] }, { "t": 3.5, "pos": [0, 2.5, 0] }, { "t": 4.3, "pos": [0, 2.5, 0] }, { "t": 4.9, "pos": [0, 0, 0] }] },
+      { "group": "arms", "parent": "bot", "pivot": [0, 1.4, 0.35], "loop": 0.8, "keys": [{ "t": 0, "rot": [0, 0, -25] }, { "t": 0.4, "rot": [0, 0, 25] }, { "t": 0.8, "rot": [0, 0, -25] }] }
+    ]
+  - Give custom motion to the 1 or 2 coolest objects. Keep moving things inside the room and clear of other objects.
 - Real-life sizes, so things look right together: table or desk top 1.5 high, chair seat 0.9, laptop 0.7 wide, monitor 1.1 x 0.7, bookshelf 3 tall, person 3.4 tall, door 4 tall.
 - Make each object recognizable and rich:
   - Hero object: 25 to 45 parts. Other objects: 10 to 30 parts.
@@ -82,7 +98,7 @@ STEP 7. Check your work before you reply.
 - The hero object has the most detail, and every object is easy to recognize.
 - Pets, plushies and other living things have a "motion" (breathe or hop is best). Wheels, fans and tails have a "move" where it fits.
 - "decor" has a window, 3 to 4 pictures, a mood and 2 to 4 lamps. No lamp sits on an object.
-- Limits: at most 10 objects, 60 parts per object, 400 parts total, 5 pictures, 5 lamps. Title up to 40 characters, bio up to 200.
+- Limits: at most 10 objects, 60 parts per object, 400 parts total, 8 rigs per object, 16 keys per rig or anim, 5 pictures, 5 lamps. Title up to 40 characters, bio up to 200.
 - "color" is one of: #E8402F, #FF8A4C, #F2C14E, #3DDC84, #2CC4B3, #3FA7FF, #9B6BFF, #FF4FA3.
 - The code is valid JSON: no comments, no trailing commas, no null values.
 
