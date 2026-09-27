@@ -645,7 +645,15 @@ $('saveBtn').addEventListener('click', async () => {
   if (!backend.me) {
     try { sessionStorage.setItem('rg-code', $('codeInput').value); sessionStorage.setItem('rg-resume', addPanel.dataset.target || '1'); } catch {}
     btn.disabled = true; st.textContent = 'Opening Google...';
-    try { await backend.signIn(); } catch (e) { st.textContent = e?.message || 'Could not start sign-in.'; btn.disabled = false; }
+    let res = false;
+    try { res = await backend.signIn(); } catch (e) { st.textContent = e?.message || 'Could not start sign-in.'; btn.disabled = false; return; }
+    if (res === 'redirect') return;   // off to Google; the add finishes when the page comes back
+    try { sessionStorage.removeItem('rg-resume'); } catch {}
+    btn.disabled = false; st.textContent = '';
+    if (!res || !backend.me) return;   // the sign-in card was closed
+    // signed in right here (Google's button): pick up your rooms, then finish adding
+    try { applyRooms(await backend.listRooms()); } catch {}
+    renderAddState(); btn.click();
     return;
   }
   const [px, pz] = parseKey(k);

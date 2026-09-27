@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { cleanRecipe } from './recipe.js';
+import { hasGoogleButton, askGoogle } from './googleSignIn.js';
 
 /* Two backends with the same shape:
    - Supabase (live, shared): used when VITE_SUPABASE_URL and the publishable (anon) key are set.
@@ -63,9 +64,25 @@ async function supabaseBackend() {
   });
   api.onAuth = cb => authListeners.push(cb);
 
+  // Google's own button when VITE_GOOGLE_CLIENT_ID is set (Google then shows this site, not supabase.co),
+  // otherwise Supabase's redirect to Google and back. Resolves true once signed in, false if the card
+  // was closed, and 'redirect' when the page is leaving for Google.
   api.signIn = async () => {
+    if (hasGoogleButton()) {
+      let got;
+      try { got = await askGoogle(); } catch (e) { console.warn(e); got = undefined; }   // Google's script didn't load: use the redirect
+      if (got === null) return false;
+      if (got) {
+        const { data, error } = await sb.auth.signInWithIdToken({ provider: 'google', token: got.token, nonce: got.nonce });
+        if (error) throw { code: 'signin_failed', message: 'Could not sign in with Google: ' + error.message };
+        const u = userOf(data?.user);
+        if (u && u.id !== api.me) { api.user = u; await checkHomeOwner(); authListeners.forEach(cb => cb(u)); }
+        return true;
+      }
+    }
     const { error } = await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + location.pathname } });
     if (error) throw { code: 'signin_failed', message: 'Could not start Google sign-in: ' + error.message };
+    return 'redirect';
   };
   api.signOut = async () => { await sb.auth.signOut(); };
 

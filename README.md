@@ -46,6 +46,7 @@ Open the address it prints (usually http://localhost:5173). Until you connect Su
 6. In Supabase, open **Authentication > URL Configuration**:
    - **Site URL:** your Vercel address, like `https://cubby.vercel.app`.
    - **Redirect URLs:** add `https://cubby.vercel.app/**` and `http://localhost:5173/**`.
+7. Keep the **Client ID** handy for Vercel (`VITE_GOOGLE_CLIENT_ID`, step 3 below). With it, Cubby uses Google's own sign-in button, so Google's screen says your site instead of the long `supabase.co` address. It's safe to share: it isn't a secret.
 
 ### Link the home room to your Google account
 
@@ -69,9 +70,10 @@ Your email only lives in that table. Nobody can read it from the site.
 3. Under **Environment Variables**, add:
    - `VITE_SUPABASE_URL` = your Project URL
    - `VITE_SUPABASE_PUBLISHABLE_KEY` = your publishable key (or `VITE_SUPABASE_ANON_KEY` = your anon key)
+   - `VITE_GOOGLE_CLIENT_ID` = the Google **Client ID** from step 2 (optional, but it makes Google's sign-in screen show your site)
 4. Click **Deploy** and share the link. If the address is different from the one you used in step 2, add it in both Google (origins) and Supabase (Site URL and Redirect URLs).
 
-To test the live version on your computer, copy `.env.example` to `.env.local` and fill in the same two values.
+To test the live version on your computer, copy `.env.example` to `.env.local` and fill in the same values.
 
 ### 4. Keep Supabase awake
 
