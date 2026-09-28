@@ -6,6 +6,7 @@ const IMG = { arise: '/img/arise.jpg', cruxly: '/img/cruxly.jpg', marauder: '/im
 
 /* The home room: the detailed hand-built one on the centre square. */
 export const HOME_NAME = 'Enhe’s room';
+export const HOME_SLUG = 'enhe';   // its link, cubby.vercel.app/enhe (kept free for it in supabase/schema.sql)
 export const HOME_BIO = 'Computer Science at Waterloo, from Toronto. Into F1 and badminton, and always building something: computer vision for sports and climbing, robot simulators, and tools that automate the boring parts.';
 export const KIND = {
   race: { label: 'Racing', color: '#E8402F' },

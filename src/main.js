@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import './style.css';
 import { canvasTex } from './three-helpers.js';
 import { disposeGroup } from './kit.js';
-import { createHomeRoom, HOT, HOT_BY_ID, KIND, HOME_NAME, HOME_BIO } from './homeRoom.js';
+import { createHomeRoom, HOT, HOT_BY_ID, KIND, HOME_NAME, HOME_BIO, HOME_SLUG } from './homeRoom.js';
 import { parseRoomCode, buildRecipeRoom, DEEP_PROMPT } from './recipe.js';
 import { createBackend } from './backend.js';
 import { bakeRoom, farLayer, sampleColors } from './farView.js';
@@ -240,7 +240,7 @@ const flyEnd = new THREE.Vector3();
 // the zoom-out limit is lifted while the camera flies, and set again (for the grid or the room) when it lands
 function flyTo(target, dir, dist, ms = 1100, start = performance.now()) { tween = { p0: camera.position.clone(), t0: controls.target.clone(), o0: { ...viewOff }, t1: target, dir, dist, start, ms: reduced ? 1 : ms }; controls.enabled = false; controls.maxDistance = Infinity; }
 // change which room is in focus: the room rises, the rest fades to black and the camera flies in, all together
-function setFocus(k) { if (focusPlot === k) return false; focusPlot = k; setControlMode(k === null); startTrans(); updateOcclusion(); return true; }
+function setFocus(k) { if (focusPlot === k) return false; focusPlot = k; setControlMode(k === null); startTrans(); updateOcclusion(); syncUrl(); return true; }
 const aspect = () => free.w / free.h;
 // a distance picked for a wide screen, stepped back so the same view fits the free part of a phone screen
 // (further back when that part is narrower than `wide`, and when the UI leaves only a slice of the height, though
@@ -270,6 +270,11 @@ function goRoom(k) {
 }
 // your own square when you're signed in and have a room (the centre one for the home room's owner)
 function myRoomKey() { return backend?.homeOwner ? HOME : myRoom ? keyOf(myRoom.px, myRoom.pz) : null; }
+// go into a room and show its card
+function enterRoom(k) {
+  if (k === HOME) { goRoom(HOME); showHomeCard(); return; }
+  const pl = placeNow(k); goRoom(k); if (pl) showRoomCard(pl.room);
+}
 // back to the grid, centred on your room if you have one, otherwise on the middle
 function goOverview() {
   const moved = setFocus(null); activeHot = null; activeObj = null; hidePanel();
@@ -307,6 +312,32 @@ function updateOcclusion() {
   empties.forEach((e, k) => { e.lines.visible = !places.has(k) && !pending.has(k) && !blocked.has(k) && ring(k) <= gridR; });
 }
 
+/* ---------- links: cubby.vercel.app/<slug> opens that room, and the address follows the room you're in ---------- */
+function slugOf(k) { return k === HOME ? HOME_SLUG : rooms.find(r => keyOf(r.px, r.pz) === k)?.slug || null; }
+function keyOfSlug(s) { if (s === HOME_SLUG) return HOME; const r = rooms.find(r => r.slug === s); return r ? keyOf(r.px, r.pz) : null; }
+const pathOf = k => { const s = k === null ? null : slugOf(k); return s ? '/' + s : '/'; };
+// the room's name in the address, if it looks like one
+function slugInPath() { let p = ''; try { p = decodeURIComponent(location.pathname); } catch {} p = p.replace(/^\/+|\/+$/g, '').toLowerCase(); return /^[a-z0-9-]+$/.test(p) ? p : null; }
+// the room a shared link asks for, until it's found. The rooms have to load first, and until then the address stays as it is.
+let linkWait = slugInPath();
+function syncUrl() { if (!linkWait && pathOf(focusPlot) !== location.pathname) history.pushState(null, '', pathOf(focusPlot)); }
+// go to the room a shared link asks for. loaded: the rooms are in, so a room that isn't found now isn't coming
+function followLink(loaded) {
+  if (!linkWait) return false;
+  const k = keyOfSlug(linkWait);
+  if (!k && !loaded) return false;
+  if (!k) showNotice(`No room has the link /${linkWait}, so here’s the whole grid.`);
+  linkWait = null; history.replaceState(null, '', pathOf(k));
+  if (k) enterRoom(k);
+  return !!k;
+}
+// the browser's back and forward buttons
+window.addEventListener('popstate', () => {
+  const s = slugInPath(), k = s && keyOfSlug(s);
+  if (!addPanel.hidden) closeAdd();
+  if (k) enterRoom(k); else { if (s) history.replaceState(null, '', '/'); goOverview(); }
+});
+
 /* ---------- panels ---------- */
 const panel = $('panel'), addPanel = $('addPanel');
 function hidePanel() { panel.hidden = true; }
@@ -316,7 +347,7 @@ function setLinks(list) {
   list.filter(l => l && l.url).forEach(l => { const a = document.createElement('a'); a.className = 'next'; a.href = l.url; a.target = '_blank'; a.rel = 'noopener noreferrer nofollow'; a.textContent = l.label + ' \u2197'; row.appendChild(a); });
   row.hidden = !row.childElementCount;
 }
-function panelBasics(title, body, stack) { $('pTitle').textContent = title; $('pBody').textContent = body; $('pBody').classList.remove('open'); $('pStack').textContent = stack || ''; $('pTags').replaceChildren(); $('pSaved').hidden = true; $('mineRow').hidden = true; $('reportRow').hidden = true; $('ownerRow').hidden = true; }
+function panelBasics(title, body, stack) { $('pTitle').textContent = title; $('pBody').textContent = body; $('pBody').classList.remove('open'); $('pStack').textContent = stack || ''; $('pTags').replaceChildren(); $('pSaved').hidden = true; $('shareRow').hidden = true; $('mineRow').hidden = true; $('reportRow').hidden = true; $('ownerRow').hidden = true; }
 // the buttons at the bottom of the card: a room card leads back to the grid, a thing card leads back to its room
 function setActions(kind) {
   panel.dataset.kind = kind;   // small screens drop a room card's buttons: the header and the card's hide button cover them
@@ -339,6 +370,7 @@ function showRoomCard(room, isPreview, justSaved) {
   room.objects.forEach((o, i) => addTag(o.name, TYPE_COLOR[o.type], () => focusObj(k, i)));
   setLinks(room.links || []);
   setActions('room');
+  if (!isPreview) showShare(room.slug, room.title);
   const mine = !isPreview && backend && room.owner === backend.me;
   $('mineRow').hidden = !mine; $('pSaved').hidden = !(mine && justSaved);
   if (mine) setKind(room.color, room.hidden ? 'Your room, hidden after reports' : 'Your room');
@@ -355,12 +387,26 @@ function showHomeCard() {
   setKind('#E8402F', mine ? 'Your room' : 'Room');
   panelBasics(HOME_NAME, HOME_BIO, '');
   HOT.forEach(h => addTag(h.name, KIND[h.kind].color, () => focusHot(h.id)));
-  setLinks([]); setActions('room');
+  setLinks([]); setActions('room'); showShare(HOME_SLUG, HOME_NAME);
   $('ownerRow').hidden = !mine;
   if (mine) $('ownerName').textContent = `Signed in as ${backend.user.name}.`;
   panel.hidden = false;
 }
 $('ownerOut').addEventListener('click', async () => { await backend.signOut(); hidePanel(); });
+// a room card shows the room's link: phones open their share sheet, computers copy it
+const canShare = touch && !!navigator.share;
+$('shareBtn').textContent = canShare ? 'Share' : 'Copy link';
+function showShare(slug, title) {
+  $('shareRow').hidden = !slug; $('shareStatus').textContent = '';
+  if (!slug) return;   // (a database without the slug column yet)
+  $('shareUrl').textContent = `${location.host}/${slug}`;
+  Object.assign($('shareBtn').dataset, { url: `${location.origin}/${slug}`, title });
+}
+$('shareBtn').addEventListener('click', async () => {
+  const { url, title } = $('shareBtn').dataset, st = $('shareStatus');
+  if (canShare) { try { await navigator.share({ title: `${title} · Cubby`, url }); return; } catch (e) { if (e?.name === 'AbortError') return; } }
+  try { await navigator.clipboard.writeText(url); st.textContent = 'Copied.'; } catch { st.textContent = 'Copy it from the address bar.'; }
+});
 function showObj(room, i) {
   const o = room.objects[i];
   setKind(TYPE_COLOR[o.type], o.type === 'project' ? 'Project' : o.type === 'about' ? 'About' : 'Interest');
@@ -385,6 +431,7 @@ $('nextBtn').addEventListener('click', () => {
 function renderChrome() {
   const pl = focusPlot ? places.get(focusPlot) : null;
   $('placeName').textContent = focusPlot === null ? 'The grid' : focusPlot === HOME ? HOME_NAME : (pl?.room?.title || 'Empty square');
+  document.title = focusPlot === null ? 'Cubby' : `${$('placeName').textContent} · Cubby`;
   $('hint').textContent = focusPlot === null
     ? `Every square holds someone’s room. ${touch ? 'Tap one to go in. Drag to move around, turn with two fingers.' : 'Click one to go in. Drag to move around, right-drag to turn.'}`
     : touch ? 'Drag to turn the room. Pinch to zoom. Tap anything to read about it.' : 'Drag to turn the room. Scroll to zoom in on what’s under the mouse. Click anything to read about it.';
@@ -401,8 +448,8 @@ function renderChrome() {
     pl.room.objects.forEach((o, i) => chip(o.name, TYPE_COLOR[o.type], activeObj && activeObj.k === focusPlot && activeObj.i === i, () => focusObj(focusPlot, i)));
   } else {
     label('Rooms');
-    chip(HOME_NAME, '#E8402F', false, () => { goRoom(HOME); showHomeCard(); });
-    rooms.forEach(r => chip(r.title, r.color, false, () => { const k = keyOf(r.px, r.pz); const pl = placeNow(k); goRoom(k); if (pl) showRoomCard(pl.room); }));
+    chip(HOME_NAME, '#E8402F', false, () => enterRoom(HOME));
+    rooms.forEach(r => chip(r.title, r.color, false, () => enterRoom(keyOf(r.px, r.pz))));
     if (!rooms.length) label('No other rooms yet');
   }
 }
@@ -673,7 +720,7 @@ $('saveBtn').addEventListener('click', async () => {
 $('codeInput').addEventListener('input', () => { try { sessionStorage.setItem('rg-code', $('codeInput').value); } catch {} });
 $('editBtn').addEventListener('click', () => {
   if (!myRoom) return;
-  const { owner, px, pz, id, createdAt, ...code } = myRoom;
+  const { owner, px, pz, id, createdAt, slug, ...code } = myRoom;
   $('codeInput').value = JSON.stringify(code, null, 2);
   openAdd();
 });
@@ -915,10 +962,10 @@ function loop() {
 const withTimeout = (p, ms) => Promise.race([p, new Promise(r => setTimeout(() => r(false), ms))]);
 const breathe = () => new Promise(r => setTimeout(r, 0));   // let the page paint the progress bar (works in background tabs too)
 function setLoad(text, frac) { $('loadText').textContent = text; $('loadBar').style.transform = `scaleX(${frac})`; }
-function reveal() {
+function reveal(loaded) {
   revealed = true;
   $('loading').classList.add('gone');
-  goOverview();                          // the fly-in
+  if (!followLink(loaded)) goOverview(); // the fly-in: into the room a shared link asks for, or over the whole grid
   spStart = performance.now() + 2500;    // judge the frame rate once the fly-in is over
   showBgLoad();
   loop();
@@ -973,10 +1020,14 @@ await withTimeout(renderer.compileAsync(scene, camera).then(() => true, () => tr
 renderer.shadowMap.needsUpdate = true;
 renderer.render(scene, camera);   // hidden under the loading screen: sends the rooms and their pictures to the graphics card
 setLoad('Almost there…', 1);
-reveal();
+reveal(!!early);
 
 const list = early || await roomsP;   // a slow database: the rooms arrive after the reveal and fade in
 if (list && !early) applyRooms(list);
+if (!early) {   // and only now can a shared link find its room (unless the rooms never came, or you've gone into one meanwhile)
+  if (!list || focusPlot !== null) linkWait = null;
+  followLink(true); syncUrl();
+}
 if (backend) {
   backend.subscribe(l => applyRooms(l));
   backend.onAuth(async () => { try { applyRooms(await backend.listRooms()); } catch {} if (!addPanel.hidden) renderAddState(); });

@@ -6,6 +6,8 @@ Cubby is a glowing grid of little 3D rooms, with Enhe’s room (the home room) i
 2. Paste the prompt into your own Claude. It looks through your projects (or asks you a few questions) and gives back a **room code**.
 3. Paste the room code into the site and click **Add my room**. It goes on the nearest empty square, or click an empty square first to choose one.
 
+Every room has its own link, like `cubby.vercel.app/mayas-studio`, so people can send theirs to friends. The address bar follows the room you're in, and every room's card has a **Copy link** button (**Share** on phones). A link is made from the room's title the first time it's saved, and stays the same when the room is renamed or moved. Enhe's room is at `/enhe`.
+
 Rooms save to a shared database, so everyone sees everyone's rooms right away. Anyone can look around without an account. Adding a room needs a Google sign-in, which gives one room per Google account and makes spam hard. It's free: visitors use their own Claude, and Supabase and Vercel have free plans.
 
 The grid starts 7 x 7 and grows by one ring whenever rooms reach the edge, so there is always a ring of empty squares to add to.
@@ -91,6 +93,7 @@ GitHub stops scheduled jobs in repos with no commits for 60 days. If that happen
 
 - **Hiding a room:** Supabase > **Table Editor** > `rooms` > set `hidden` to `true`. Only its owner still sees it, and they can't change it. Set it back to `false` to bring it back.
 - **Removing a room for good:** delete its row in the same table.
+- **Room links:** they're in the `slug` column. Only you can change one there (lowercase letters, numbers and dashes); nobody can change theirs from the site. Titles with no English letters, like Chinese ones, get `room`, `room-2` and so on, so you may want to give those a better one. Rooms added before links existed got theirs when you ran `schema.sql`, oldest room first.
 - **Reports:** signed-in visitors can press **Report it** on a room card. Reports land in the `reports` table (only you can read it). A room with reports from 3 different people hides itself until you look at it.
 - **Spam:** one room per Google account, and new rooms can only go one ring past the farthest room, so nobody can scatter rooms across the whole grid.
 - **Room codes are checked twice:** once in the browser (only shapes, sizes, colors and text get through, never code) and once by the database (size and shape limits).
@@ -120,6 +123,7 @@ GitHub stops scheduled jobs in repos with no commits for 60 days. If that happen
 | `src/farView.js` | A room's far version: bakes a built room into small cacheable data, and turns that data back into meshes |
 | `src/roomCache.js` | Keeps far versions in the visitor's browser (IndexedDB) so return visits skip building |
 | `src/backend.js` | Talks to Supabase (live) or browser storage (demo) |
-| `supabase/schema.sql` | The database table and its safety rules |
+| `supabase/schema.sql` | The database table and its safety rules, and how room links are made |
+| `vercel.json` | Sends room links (`/mayas-studio`) to the site, so Vercel doesn't answer them with "not found" |
 | `public/favicon.svg` | The tab icon (plus `favicon.ico` and `apple-touch-icon.png` for older browsers and phones) |
 | `setup/keep-awake.yml` | Keeps the free Supabase project from pausing (move it into `.github/workflows/`) |

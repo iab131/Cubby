@@ -24,8 +24,13 @@ function toStored(recipe) {
 function fromRow(row) {
   try {
     const r = cleanRecipe({ ...(row.recipe || {}), id: row.owner });
-    return { ...r, owner: row.owner, px: row.px, pz: row.pz, hidden: !!row.hidden, createdAt: row.created_at };
+    return { ...r, owner: row.owner, px: row.px, pz: row.pz, hidden: !!row.hidden, createdAt: row.created_at, slug: row.slug || null };
   } catch { return null; }
+}
+// a room's link, made the way the database makes it (supabase/schema.sql): "Maya's Studio" -> mayas-studio
+function slugify(title) {
+  const s = String(title || '').toLowerCase().replace(/['’]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32).replace(/-+$/, '');
+  return s.length < 2 ? 'room' : s;
 }
 function userOf(u) {
   if (!u || u.is_anonymous) return null;
@@ -89,7 +94,8 @@ async function supabaseBackend() {
   api.listRooms = async () => {
     const out = [];
     for (let from = 0; from < 20000; from += PAGE) {
-      const { data, error } = await sb.from('rooms').select('owner,px,pz,recipe,hidden,created_at').order('created_at', { ascending: true }).range(from, from + PAGE - 1);
+      // every column, so the rooms still load on a database that doesn't have the slug column yet
+      const { data, error } = await sb.from('rooms').select('*').order('created_at', { ascending: true }).range(from, from + PAGE - 1);
       if (error) throw error;
       out.push(...data.map(fromRow).filter(Boolean));
       if (data.length < PAGE) break;
@@ -108,6 +114,7 @@ async function supabaseBackend() {
     const row = { owner: api.me, px, pz, recipe: toStored(recipe) };
     const { error } = await sb.from('rooms').upsert(row, { onConflict: 'owner' });
     if (error) {
+      if (error.code === '23505' && /slug/.test(error.message)) throw { code: 'slug_taken', message: 'Someone just saved a room with the same name. Try again.' };
       if (error.code === '23505') throw { code: 'taken', message: 'Someone just took that square. Click another glowing square and try again.' };
       if (error.code === '23514') throw { code: 'invalid', message: 'The database said no to this room code. Ask your Claude for a smaller room.' };
       if (error.code === 'P0001') throw { code: 'too_far', message: error.message };
@@ -144,8 +151,10 @@ function demoBackend() {
     async saveRoom(recipe, px, pz) {
       const rows = read();
       if (rows.some(r => r.owner !== me && r.px === px && r.pz === pz)) throw { code: 'taken', message: 'That square is taken. Click another glowing square.' };
-      const old = rows.find(r => r.owner === me);
-      const next = rows.filter(r => r.owner !== me).concat([{ owner: me, px, pz, recipe: toStored(recipe), created_at: old?.created_at || new Date().toISOString() }]);
+      const old = rows.find(r => r.owner === me), stored = toStored(recipe);
+      let slug = old?.slug;
+      if (!slug) { const base = slugify(stored.title); slug = base; for (let n = 2; rows.some(r => r.owner !== me && r.slug === slug); n++) slug = `${base}-${n}`; }
+      const next = rows.filter(r => r.owner !== me).concat([{ owner: me, px, pz, recipe: stored, slug, created_at: old?.created_at || new Date().toISOString() }]);
       write(next); emit();
     },
     async deleteRoom() { write(read().filter(r => r.owner !== me)); emit(); },

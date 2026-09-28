@@ -69,6 +69,43 @@ drop trigger if exists rooms_check_square on public.rooms;
 create trigger rooms_check_square before insert or update of px, pz, recipe on public.rooms
   for each row execute function public.rooms_check_square();
 
+-- ---------- room links: cubby.vercel.app/<slug> opens that room ----------
+-- A room's link is made from its title the first time it's saved ("Maya's Studio" -> mayas-studio, or
+-- mayas-studio-2 if that's taken) and stays the same after that, so shared links keep working when the
+-- room is renamed or moved. Only you can change one (Table Editor): lowercase letters, numbers and dashes.
+alter table public.rooms add column if not exists slug text unique;
+alter table public.rooms drop constraint if exists rooms_slug_check;
+alter table public.rooms add constraint rooms_slug_check check (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$');
+
+create or replace function public.rooms_set_slug() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare base text; n int := 1;
+begin
+  if tg_op = 'UPDATE' and old.slug is not null then
+    if auth.uid() is not null then new.slug := old.slug; end if;   -- a signed-in person can't change it, you can
+    return new;
+  end if;
+  base := regexp_replace(lower(coalesce(new.recipe ->> 'title', '')), '[''’]', '', 'g');
+  base := trim(both '-' from left(trim(both '-' from regexp_replace(base, '[^a-z0-9]+', '-', 'g')), 32));
+  if length(base) < 2 then base := 'room'; end if;
+  new.slug := base;
+  -- the home room's link (HOME_SLUG in src/homeRoom.js) and a few words kept for the site's own pages
+  while new.slug = any (array['enhe', 'api', 'assets', 'img', 'about', 'admin', 'help', 'privacy', 'terms'])
+     or exists (select 1 from rooms where slug = new.slug and owner <> new.owner) loop
+    n := n + 1; new.slug := base || '-' || n;
+  end loop;
+  return new;
+end $$;
+drop trigger if exists rooms_set_slug on public.rooms;
+create trigger rooms_set_slug before insert or update on public.rooms
+  for each row execute function public.rooms_set_slug();
+-- rooms saved before links existed get theirs now, oldest first
+do $$ declare r record; begin
+  for r in select owner from public.rooms where slug is null order by created_at loop
+    update public.rooms set slug = null where owner = r.owner;   -- the trigger fills it in
+  end loop;
+end $$;
+
 -- ---------- reports: 3 reports from different people hide a room ----------
 create table if not exists public.reports (
   room_owner uuid not null references public.rooms(owner) on delete cascade,
