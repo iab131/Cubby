@@ -1,23 +1,12 @@
-/* Sign in with Google's own button, then hand Google's proof to Supabase (signInWithIdToken).
-   The sign-in happens on this site, so Google shows this site (or the app name set in Google Cloud)
-   instead of the project's long supabase.co address.
-   Needs VITE_GOOGLE_CLIENT_ID: the same Web client ID that Supabase's Google provider uses.
+/* Sign in with Google in a popup, then hand Google's proof to Supabase (signInWithIdToken).
+   The popup is Google's own sign-in page, opened straight from the click, and it names this site
+   (or the app name set in Google Cloud) instead of the project's long supabase.co address. Google
+   sends the proof back to google-callback.html on this site, which passes it here and closes.
+   Needs VITE_GOOGLE_CLIENT_ID (the same Web client ID Supabase's Google provider uses), with that page
+   in the client's Authorized redirect URIs in Google Cloud (see SETUP.md).
    Without it, sign-in falls back to Supabase's redirect (see backend.js). */
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
-export const hasGoogleButton = () => !!CLIENT_ID;
-
-let scriptP = null;
-function loadGoogle() {
-  if (window.google?.accounts?.id) return Promise.resolve();
-  scriptP ||= new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = 'https://accounts.google.com/gsi/client'; s.async = true;
-    s.onload = () => resolve();
-    s.onerror = () => { scriptP = null; reject(new Error('Could not load Google sign-in.')); };
-    document.head.appendChild(s);
-  });
-  return scriptP;
-}
+export const hasGooglePopup = () => !!CLIENT_ID;
 
 // a one-time random value: Google puts its hash inside the proof, Supabase checks it against the original
 function randomNonce() {
@@ -29,34 +18,28 @@ async function sha256Hex(text) {
   return [...new Uint8Array(d)].map(x => x.toString(16).padStart(2, '0')).join('');
 }
 
-/* A small card with Google's button. Resolves with { token, nonce } once the person signs in,
-   or null if they close it. Throws if Google's script can't load. */
-let open = null;
-export async function askGoogle() {
-  if (open) return open;
-  await loadGoogle();
-  const nonce = randomNonce(), hashed = await sha256Hex(nonce);
+/* Opens Google's sign-in in a popup. Resolves with { token, nonce } once the person signs in, or null if
+   they close it. Throws if the browser blocks the popup. Call it straight from a click (before any await),
+   or the browser blocks it. */
+let open = null, popup = null;
+export function askGoogle() {
+  if (open) { popup?.focus(); return open; }
+  if (!('BroadcastChannel' in window)) throw new Error('This browser can’t take the sign-in back from the popup.');
+  const w = 480, h = 640, left = screenX + Math.max(0, (outerWidth - w) / 2), top = screenY + Math.max(0, (outerHeight - h) / 2);
+  popup = window.open('', 'cubby-google', `popup,width=${w},height=${h},left=${left},top=${top}`);
+  if (!popup) throw new Error('The browser blocked the sign-in popup.');
+  const nonce = randomNonce(), state = randomNonce();
   open = new Promise(resolve => {
-    const veil = document.createElement('div');
-    veil.className = 'gsi-veil';
-    veil.innerHTML = `
-      <div class="gsi-card" role="dialog" aria-modal="true" aria-labelledby="gsiTitle">
-        <h3 id="gsiTitle">Sign in to add your room</h3>
-        <p>One room per Google account. Looking around never needs one.</p>
-        <div class="gsi-btn"></div>
-        <button type="button" class="text-btn gsi-cancel">Cancel</button>
-      </div>`;
-    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); done(null); } };
-    const done = v => { veil.remove(); document.removeEventListener('keydown', onKey, true); open = null; resolve(v); };
-    veil.addEventListener('click', e => { if (e.target === veil) done(null); });
-    veil.querySelector('.gsi-cancel').addEventListener('click', () => done(null));
-    document.addEventListener('keydown', onKey, true);   // Escape closes this card only, not the add panel behind it
-    document.body.appendChild(veil);
-    window.google.accounts.id.initialize({
-      client_id: CLIENT_ID, nonce: hashed, ux_mode: 'popup', context: 'signin', itp_support: true,
-      callback: r => done(r && r.credential ? { token: r.credential, nonce } : null)
+    const ch = new BroadcastChannel('cubby-google');
+    let timer = 0, closedAt = 0;
+    const done = v => { clearInterval(timer); ch.close(); open = null; try { popup.close(); } catch {} popup = null; resolve(v); };
+    ch.onmessage = e => { if (e.data?.state === state) done(e.data.idToken ? { token: e.data.idToken, nonce } : null); };
+    // closed without signing in. The callback page closes itself right after sending the proof, so give that a moment to arrive.
+    timer = setInterval(() => { if (!popup.closed) return; closedAt ||= Date.now(); if (Date.now() - closedAt > 1000) done(null); }, 250);
+    sha256Hex(nonce).then(hashed => {
+      const q = new URLSearchParams({ client_id: CLIENT_ID, response_type: 'id_token', scope: 'openid email profile', redirect_uri: location.origin + '/google-callback.html', nonce: hashed, state, prompt: 'select_account' });
+      popup.location.href = 'https://accounts.google.com/o/oauth2/v2/auth?' + q;
     });
-    window.google.accounts.id.renderButton(veil.querySelector('.gsi-btn'), { type: 'standard', theme: 'filled_black', size: 'large', text: 'continue_with', shape: 'pill', width: 260 });
   });
   return open;
 }

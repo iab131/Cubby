@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="robots" content="noindex">
+  <title>Signing in to Cubby</title>
+</head>
+<body style="margin: 0; min-height: 100vh; display: grid; place-items: center; background: #070B0A; color: #9AA2A5; font: 15px system-ui, sans-serif">
+<p>Signing in… You can close this window.</p>
+<script>
+  // Google sends people back here with the sign-in proof after the # (so it never reaches a server).
+  // Pass it to the Cubby page that opened this popup (src/googleSignIn.js), then close.
+  const p = new URLSearchParams(location.hash.slice(1));
+  history.replaceState(null, '', location.pathname);
+  new BroadcastChannel('cubby-google').postMessage({ idToken: p.get('id_token'), state: p.get('state'), error: p.get('error') });
+  window.close();
+</script>
+</body>
+</html>

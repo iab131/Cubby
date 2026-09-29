@@ -697,8 +697,8 @@ $('saveBtn').addEventListener('click', async () => {
     if (res === 'redirect') return;   // off to Google; the add finishes when the page comes back
     try { sessionStorage.removeItem('rg-resume'); } catch {}
     btn.disabled = false; st.textContent = '';
-    if (!res || !backend.me) return;   // the sign-in card was closed
-    // signed in right here (Google's button): pick up your rooms, then finish adding
+    if (!res || !backend.me) return;   // the sign-in popup was closed
+    // signed in right here (Google's popup): pick up your rooms, then finish adding
     try { applyRooms(await backend.listRooms()); } catch {}
     renderAddState(); btn.click();
     return;

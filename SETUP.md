@@ -16,12 +16,12 @@ How to put your own copy of Cubby online (about 30 minutes) and look after it. F
 3. Open **APIs & Services > OAuth consent screen** (Google may call it **Google Auth Platform**). Choose **External**, app name **Cubby**, your email for support and contact. Save. Then **publish** the app (Audience > Publish app) so anyone can sign in, not just test users.
 4. Open **Credentials > Create credentials > OAuth client ID**. Pick **Web application**.
    - **Authorized JavaScript origins:** your site, for example `https://cubby.vercel.app`, and `http://localhost:5173` for testing.
-   - **Authorized redirect URIs:** the Supabase Callback URL from step 1.
+   - **Authorized redirect URIs:** the Supabase Callback URL from step 1, plus Cubby's own sign-in page on your site and for testing: `https://cubby.vercel.app/google-callback.html` and `http://localhost:5173/google-callback.html`.
 5. Copy the **Client ID** and **Client secret** into the Supabase Google page from step 1. Save.
 6. In Supabase, open **Authentication > URL Configuration**:
    - **Site URL:** your Vercel address, like `https://cubby.vercel.app`.
    - **Redirect URLs:** add `https://cubby.vercel.app/**` and `http://localhost:5173/**`. The `/**` matters: it lets people who sign in from a room's link land back in that room.
-7. Keep the **Client ID** handy for Vercel (`VITE_GOOGLE_CLIENT_ID`, step 3 below). With it, Cubby uses Google's own sign-in button, so Google's screen says your site instead of the long `supabase.co` address. It's safe to share: it isn't a secret.
+7. Keep the **Client ID** handy for Vercel (`VITE_GOOGLE_CLIENT_ID`, step 3 below). With it, clicking sign-in opens Google's sign-in straight away in a popup, and Google's screen says your site instead of the long `supabase.co` address. It's safe to share: it isn't a secret.
 
 ## 3. Vercel: puts the site on the internet
 
