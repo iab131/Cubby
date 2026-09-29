@@ -22,3 +22,25 @@ Ideas for later, and when they're worth doing.
 - Database: a `floor` column (0 for every room today), one room per square per floor, and a check that a new room goes on a floor that exists (or on the new top one).
 
 **Still to decide:** how many floors the fade reaches (start with 3 and see how it looks); how much space goes between floors; whether the camera can look at the whole building from outside or always sits at one floor.
+
+## Search: matching rooms rise up
+
+**When:** any time. It's small to build while every room is already in the browser, and it gets more useful as the grid grows past what you can scan by eye.
+
+**Why:** today the only way to find someone who climbs, codes in Python or plays piano is to open rooms one by one. Search lets people find others like them, which is the point of a grid of people.
+
+**The idea:**
+- A search box in the header, next to **Add your room** (an icon on phones). Type a skill, a hobby or a name, like `piano`, `robotics` or `maya`.
+- Rooms that match rise up out of the grid and glow in their colour, and the rest dim a little, so the matches stand out from any angle. Clearing the search lowers them back down.
+- The dock lists the matching rooms, with a count ("3 rooms"). Clicking one flies into it, like today.
+- Inside a matching room, the things that matched glow, so you see why it came up.
+
+**How it could work:**
+- What it searches: each room's title, bio, the names and descriptions of its things, its picture captions and signs. Names come from room titles and bios ("Maya's Studio"), since people's Google names stay private.
+- Kit items count through their hints in `kitList.js`, so `karting` finds a room with the F1 car and `bouldering` finds the climbing wall, even if the room's text never says it.
+- Matching: ignore case, and match the start of words, so `climb` finds "climbing". Rooms with more matches can rise a little higher.
+- Rising: rooms already lift a little when you hover them on the grid and fade when you open one (both in the loop in `main.js`). Search sets the same lift and dim, so it's mostly wiring, with no new drawing.
+- Enhe's room is searched too, through the text of each thing in it (`homeRoom.js`).
+- With floors (above), rooms on floors that aren't loaded can't be searched in the browser, so search moves to the database then (Postgres full-text search on the room code), and the results show which floor each match is on.
+
+**Still to decide:** how high matches rise, and whether better matches rise higher; whether a search can be shared as a link (like `/?q=piano`); whether to suggest searches from what's common on the grid (the most used kit items, say).
